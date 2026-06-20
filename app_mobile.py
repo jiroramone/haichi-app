@@ -1352,61 +1352,203 @@ def set_mark(venue, r_num, uma_num, mark):
         st.session_state["user_markers"][key] = mark
 
 def render_mobile_card(row, venue, curr_df):
-    """1頭分のスマホカードを描画"""
+    """1頭分のスマホカード（タップで詳細展開）"""
     uma_num  = int(row.get("馬番", 0))
+    r_num    = int(row.get("Ｒ", 0))
     name     = escape_html(str(row.get("馬名", "不明")))
     jockey   = str(row.get("騎手", "不明"))
-    mark     = get_mark(venue, int(row.get("Ｒ", 0)), uma_num)
+    stable   = str(row.get("調教師", "不明"))
+    owner    = str(row.get("馬主(最新/仮想)", ""))
+    mark     = get_mark(venue, r_num, uma_num)
     css_cls  = MARK_LABELS.get(mark, "")
 
-    # オッズ
+    # オッズ・人気
     try:
         o_f = float(row.get("オッズ", 0))
         odds_txt = f"{o_f}倍" if o_f > 0 else "未取得"
     except Exception:
         odds_txt = "未取得"
+    try:
+        p_f = float(row.get("人気", 0))
+        pop_txt = f"{int(p_f)}人気" if p_f > 0 else ""
+    except Exception:
+        pop_txt = ""
 
     # 能力指数
-    score = row.get("総合指数", 0.0)
     try:
-        score_txt = f"指数:{float(score):.1f}"
+        score_txt = f"指数:{float(row.get('総合指数', 0)):.1f}"
     except Exception:
         score_txt = ""
 
+    # 前走情報
+    try:
+        prev_rank = int(row.get("前走着順", 0))
+        prev_rank_txt = f"前走{prev_rank}着" if prev_rank > 0 else ""
+    except Exception:
+        prev_rank_txt = ""
+
+    interval = str(row.get("レース間隔", ""))
+    interval_txt = f"中{interval}週" if interval and interval not in ("", "nan", "-") else ""
+
+    # ペア情報
+    j_pair = str(row.get("騎手_ペア", ""))
+    j_pair_txt = f"騎手ペア: {j_pair}" if j_pair and j_pair not in ("", "nan") else ""
+    t_pair = str(row.get("調教師_ペア", ""))
+    t_pair_txt = f"調教師ペア: {t_pair}" if t_pair and t_pair not in ("", "nan") else ""
+
     # バッジ
     badges = ""
-    if row.get("騎手_青塗"):  badges += '<span class="m-badge badge-ao">青塗騎手</span>'
-    if row.get("騎手_黄塗"):  badges += '<span class="m-badge badge-ki">黄塗騎手</span>'
+    if row.get("騎手_青塗"):     badges += '<span class="m-badge badge-ao">青塗騎手</span>'
+    if row.get("騎手_黄塗"):     badges += '<span class="m-badge badge-ki">黄塗騎手</span>'
+    if row.get("調教師_青塗"):   badges += '<span class="m-badge badge-ao">青塗調教師</span>'
+    if row.get("調教師_黄塗"):   badges += '<span class="m-badge badge-ki">黄塗調教師</span>'
     if row.get("お詫び好走候補"): badges += '<span class="m-badge badge-owabi">お詫び</span>'
 
-    # waku
-    waku_info = get_waku_info(uma_num, int(row.get("頭数", 16)))
+    # 枠色
+    waku_info  = get_waku_info(uma_num, int(row.get("頭数", 16)))
     waku_color = waku_info[1] if waku_info else "#ccc"
-
-    mark_disp = f"<span style='font-size:22px;font-weight:900;color:{MARK_COLORS.get(mark,"#ccc")};'>{mark}</span>" if mark else ""
+    mark_color = MARK_COLORS.get(mark, "#ccc")
+    mark_disp  = f"<span style='font-size:22px;font-weight:900;color:{mark_color};margin-left:6px;'>{mark}</span>" if mark else ""
 
     card_html = f"""
 <div class="m-card {css_cls}">
-  <div style="display:flex;align-items:center;">
+  <div style="display:flex;align-items:center;gap:8px;">
     <div style="width:36px;height:36px;border-radius:50%;background:{waku_color};
          display:flex;align-items:center;justify-content:center;
          font-weight:900;font-size:16px;color:#fff;flex-shrink:0;">{uma_num}</div>
     <span class="m-horse-name">{name}</span>
-    <span class="m-odds" style="margin-left:auto;">{odds_txt}</span>
+    <span class="m-odds">{odds_txt}</span>
     {mark_disp}
   </div>
-  <div class="m-jockey">🏇 {jockey}　{score_txt}</div>
-  <div>{badges}</div>
+  <div class="m-jockey">🏇 {jockey}　<span style="color:#888;font-size:13px;">{pop_txt}</span></div>
+  <div style="font-size:13px;color:#666;margin-top:2px;">{score_txt}　{prev_rank_txt}　{interval_txt}</div>
+  <div style="margin-top:4px;">{badges}</div>
 </div>"""
     st.markdown(card_html, unsafe_allow_html=True)
 
+    # 詳細展開（st.expander）- PC版と同じ情報を表示
+    with st.expander("📋 詳細を見る", expanded=False):
+
+        # ---- 騎手・調教師・馬主 ----
+        haichi_html = f"""
+<div style="font-size:14px;background:#FAFAFA;padding:10px 14px;border-radius:8px;
+     margin-bottom:8px;line-height:1.8;border:1px solid #ECEFF1;">
+  <div>👤 騎手: <strong style="color:#111;">{jockey}</strong>
+    <span style="color:#D500F9;font-size:12px;font-weight:bold;margin-left:6px;">{j_pair_txt}</span></div>
+  <div>🏠 調教師: <strong style="color:#111;">{stable}</strong>
+    <span style="color:#00B0FF;font-size:12px;font-weight:bold;margin-left:6px;">{t_pair_txt}</span></div>
+  {'<div>👑 馬主: <strong style="color:#111;">' + owner + '</strong></div>' if owner and owner not in ("不明","nan","") else ""}
+</div>"""
+        st.markdown(haichi_html, unsafe_allow_html=True)
+
+        # ---- 黄金比指数 ----
+        try:
+            perf_score  = float(row.get("総合指数", 0) or 0)
+            perf_level  = float(row.get("レベル点", 0) or 0)
+            perf_jiri   = float(row.get("自力点", 0) or 0)
+            perf_bonus  = float(row.get("ボーナス減点", 0) or 0)
+        except Exception:
+            perf_score = perf_level = perf_jiri = perf_bonus = 0.0
+
+        prev_rank  = row.get("前走着順", "-")
+        try: prev_rank_txt = f"{int(float(prev_rank))}着"
+        except Exception: prev_rank_txt = "-"
+        prev_diff  = row.get("前走着差", "-")
+        interval   = row.get("レース間隔", "-")
+        prev_leg   = row.get("前走脚質", "-")
+        hoso       = row.get("好走/次走あり", "-")
+        kyuyo      = str(row.get("長期休養フラグ", "-"))
+
+        kyuyo_html = ""
+        if "🚩" in kyuyo:
+            kyuyo_html = f"<div style='background:#E8F5E9;color:#2E7D32;font-size:12px;font-weight:bold;padding:4px;border-radius:4px;margin-top:4px;border:1px solid #A5D6A7;'>{kyuyo}</div>"
+        elif kyuyo not in ("-","nan","None",""):
+            kyuyo_html = f"<div style='background:#F5F5F5;color:#616161;font-size:12px;padding:4px;border-radius:4px;margin-top:4px;border:1px solid #E0E0E0;'>{kyuyo}</div>"
+
+        perf_html = f"""
+<div style="padding:10px 14px;background:#FFFDE7;border:1px solid #FFF59D;border-radius:8px;margin-bottom:8px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+    <span style="font-weight:bold;font-size:14px;color:#F57F17;">⚡ 黄金比指数</span>
+    <span style="font-weight:bold;font-size:16px;color:#E65100;">{perf_score:.1f} 点</span>
+  </div>
+  <div style="font-size:13px;color:#5D4037;display:flex;flex-wrap:wrap;gap:8px;">
+    <span>前走: <strong>{prev_rank_txt}</strong> ({prev_diff})</span>
+    <span>間隔: <strong>{interval}</strong></span>
+    <span>脚質: <strong>{prev_leg}</strong></span>
+    <span>相手: <strong>{perf_level:.1f}点</strong></span>
+    <span>自力: <strong>{perf_jiri:.1f}点</strong></span>
+    <span>加減: <strong>{perf_bonus:.1f}点</strong></span>
+  </div>
+  <div style="font-size:12px;color:#795548;border-top:1px dashed #CCC;margin-top:6px;padding-top:6px;">{hoso}</div>
+  {kyuyo_html}
+</div>"""
+        st.markdown(perf_html, unsafe_allow_html=True)
+
+        # ---- 坂路調教 ----
+        t4 = format_lap_time(row.get("4Fタイム", np.nan))
+        l4 = format_lap_time(row.get("Lap4", np.nan))
+        l3 = format_lap_time(row.get("Lap3", np.nan))
+        l2 = format_lap_time(row.get("Lap2", np.nan))
+        l1 = format_lap_time(row.get("ラスト1F", np.nan))
+        lap_eval = str(row.get("ラップ評価", "-"))
+
+        if "🌟激アツ" in lap_eval:
+            hbg, hcol, hbd = "#FFF3E0", "#E65100", "#FFE0B2"
+        elif "🚨危険" in lap_eval:
+            hbg, hcol, hbd = "#FFEBEE", "#C62828", "#FFCDD2"
+        else:
+            hbg, hcol, hbd = "#ECEFF1", "#37474F", "#CFD8DC"
+
+        if t4 != "-":
+            hanro_html = f"""
+<div style="padding:10px 14px;background:{hbg};color:{hcol};border:1px solid {hbd};border-radius:8px;margin-bottom:8px;font-size:13px;">
+  <div style="font-weight:bold;margin-bottom:2px;">🏃 坂路: {t4}秒 ({l4}-{l3}-{l2}-{l1})</div>
+  <div style="font-size:12px;font-weight:bold;">評価: {lap_eval}</div>
+</div>"""
+        else:
+            hanro_html = """
+<div style="padding:10px 14px;background:#F9F9F9;color:#9E9E9E;border:1px dashed #E0E0E0;border-radius:8px;margin-bottom:8px;font-size:13px;">
+  <div style="font-weight:bold;">🏃 坂路: データなし</div>
+</div>"""
+        st.markdown(hanro_html, unsafe_allow_html=True)
+
+        # ---- 判定バッジ ----
+        checks = [
+            ("騎手",  str(row.get("騎手判定",  "ー"))),
+            ("調教",  str(row.get("調教師判定", "ー"))),
+            ("馬主",  str(row.get("馬主判定",   "ー"))),
+            ("サイン",str(row.get("配置サイン", "ー"))),
+        ]
+        badge_parts = [make_badge_html(lt, dec) for lt, dec in checks]
+        badge_parts = [b for b in badge_parts if b]
+        if badge_parts:
+            st.markdown(
+                f"<div style='display:flex;flex-direction:column;gap:4px;margin-bottom:8px;'>{''.join(badge_parts)}</div>",
+                unsafe_allow_html=True
+            )
+
+        # ---- 同期ペア情報 ----
+        horse_key = f"{venue}_{r_num}_{uma_num}"
+        if horse_key not in st.session_state["partner_cache"]:
+            st.session_state["partner_cache"][horse_key] = find_all_pair_partners_detailed(row, curr_df)
+        detailed_partners = st.session_state["partner_cache"][horse_key]
+        if detailed_partners:
+            p_items = "".join([
+                f"<div style='font-size:12px;line-height:1.5;background:#FFF;padding:4px 8px;border-radius:4px;border-left:3px solid #0066CC;margin-top:4px;'>{p}</div>"
+                for p in detailed_partners
+            ])
+            st.markdown(f"""
+<div style="padding:10px;background:#EBF3FC;border:1px solid #B3D4FF;border-radius:8px;margin-bottom:8px;">
+  <div style="font-weight:bold;font-size:13px;color:#0052CC;margin-bottom:4px;">🔮 同期ペア情報</div>
+  {p_items}
+</div>""", unsafe_allow_html=True)
+
     # 印ボタン（横一列）
-    r_num = int(row.get("Ｒ", 0))
     btn_key_base = f"mbtn_{venue}_{r_num}_{uma_num}"
     cols = st.columns(7)
-    for ci, (mk, _) in enumerate([("◎",""), ("○",""), ("▲",""), ("△",""), ("☆",""), ("✖",""), ("－","")]):
+    for ci, (mk, _) in enumerate([("◎",""),("○",""),("▲",""),("△",""),("☆",""),("✖",""),("－","")]):
         with cols[ci]:
-            label = mk if mk != "－" else "消"
+            label  = mk if mk != "－" else "消"
             active = (mark == mk)
             if st.button(label, key=f"{btn_key_base}_{mk}",
                          use_container_width=True,
