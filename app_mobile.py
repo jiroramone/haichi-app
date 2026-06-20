@@ -9,7 +9,6 @@ import uuid
 import unicodedata
 import logging
 from datetime import date
-from bs4 import BeautifulSoup
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -17,10 +16,17 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # GitHub自動取得設定（app.py と同じ値に変更してください）
 # ============================================================
-GITHUB_RAW_BASE    = "https://raw.githubusercontent.com/【ユーザー名】/【リポジトリ名】/main/data"
-GITHUB_CURR_FILENAME  = "curr_today.csv"
-GITHUB_PREV_FILENAME  = "prev_yesterday.csv"
-GITHUB_HANRO_FILENAME = "hanro_today.csv"
+GITHUB_RAW_BASE = "https://raw.githubusercontent.com/【ユーザー名】/【リポジトリ名】/main/data"
+
+from datetime import date as _date, timedelta as _timedelta
+_today     = _date.today()
+_yesterday = _today - _timedelta(days=1)
+_today_str     = _today.strftime("%Y%m%d")
+_yesterday_str = _yesterday.strftime("%Y%m%d")
+
+GITHUB_CURR_FILENAME  = f"{_today_str}.csv"
+GITHUB_PREV_FILENAME  = f"{_yesterday_str}.csv"
+GITHUB_HANRO_FILENAME = f"{_today_str}Diao-Jiao.csv"
 
 MASTER_CSV_CANDIDATES = [
     r"C:\\Users\\keita\\Desktop\\配置馬券AC\\2023-2026.csv",
@@ -649,94 +655,6 @@ def make_badge_html(label_type, text):
     </div>
     """
 
-def scrape_yahoo_odds_jra(date_str, venue_name, r_num):
-    cache_key = f"yahoo_base_id_{date_str}_{venue_name}"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    
-    if cache_key not in st.session_state:
-        parts = str(date_str).replace('-', '/').replace('.', '/').split(' ')[0].split('/')
-        if len(parts) < 3: 
-            return None
-            
-        year = parts[0]
-        month = int(parts[1])
-        target_day = int(parts[2])
-        
-        try:
-            url = f"https://sports.yahoo.co.jp/keiba/schedule/monthly/?year={year}&month={month}"
-            res_sched = requests.get(url, headers=headers, timeout=5)
-            if res_sched.status_code == 200:
-                soup = BeautifulSoup(res_sched.text, 'html.parser')
-                best_id = None
-                min_diff = 999
-                
-                for tr in soup.find_all('tr'):
-                    current_day = None
-                    for td in tr.find_all('td'):
-                        m_day = re.search(r'(\d+)日', td.get_text().strip())
-                        if m_day: 
-                            current_day = int(m_day.group(1))
-                            break
-                            
-                    link = tr.find('a', href=re.compile(r'/keiba/race/list/\d{8}'))
-                    if link and venue_name in link.get_text():
-                        m_id = re.search(r'/keiba/race/list/(\d{8})', link['href'])
-                        if m_id and current_day is not None:
-                            diff = abs(current_day - target_day)
-                            if diff < min_diff:
-                                min_diff = diff
-                                best_id = m_id.group(1)
-                                
-                if best_id: 
-                    st.session_state[cache_key] = best_id
-        except Exception: 
-            pass
-
-    base_id = st.session_state.get(cache_key)
-    if not base_id: 
-        return None
-        
-    race_id = f"{base_id}{r_num:02d}"
-    urls = [
-        f"https://sports.yahoo.co.jp/keiba/race/odds/tf/{race_id}",
-        f"https://sports.yahoo.co.jp/keiba/race/denma/{race_id}"
-    ]
-    
-    for url in urls:
-        try:
-            res = requests.get(url, headers=headers, timeout=5)
-            if res.status_code == 200:
-                soup = BeautifulSoup(res.text, 'html.parser')
-                odds_map = {}
-                for table in soup.find_all('table'):
-                    headers_text = [th.get_text().strip() for th in table.find_all('th')]
-                    if '馬番' in headers_text and any('オッズ' in h or '単勝' in h for h in headers_text):
-                        u_idx = headers_text.index('馬番')
-                        o_idx = next(i for i, h in enumerate(headers_text) if 'オッズ' in h or '単勝' in h)
-                        
-                        tbody = table.find('tbody')
-                        rows = tbody.find_all('tr') if tbody else table.find_all('tr')
-                        
-                        for row in rows:
-                            tds = row.find_all('td')
-                            if len(tds) > max(u_idx, o_idx):
-                                num_txt = tds[u_idx].get_text().strip()
-                                span = tds[o_idx].find('span')
-                                o_txt = span.get_text().strip() if span else tds[o_idx].get_text().strip()
-                                
-                                m = re.search(r'\((.*?)\)', o_txt)
-                                if m: 
-                                    o_txt = m.group(1)
-                                    
-                                if num_txt.isdigit() and o_txt.replace('.', '', 1).isdigit(): 
-                                    odds_map[int(num_txt)] = float(o_txt)
-                                    
-                        if odds_map: 
-                            return odds_map
-        except Exception: 
-            continue
-            
-    return None
 
 def preprocess_and_calculate_haichi(df):
     if df.empty: 
