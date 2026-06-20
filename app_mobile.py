@@ -20,31 +20,10 @@ GITHUB_RAW_BASE = "https://raw.githubusercontent.com/jiroramone/haichi-app/main/
 
 import re as _re
 
-def _get_github_filelist():
-    api_url = GITHUB_RAW_BASE.replace(
-        "https://raw.githubusercontent.com/",
-        "https://api.github.com/repos/"
-    ).replace("/main/data", "/contents/data")
-    try:
-        import requests as _req
-        r = _req.get(api_url, timeout=10)
-        if r.status_code == 200:
-            return [f["name"] for f in r.json() if isinstance(f, dict)]
-    except Exception:
-        pass
-    return []
-
-def _pick_file(filelist, pattern):
-    matched = sorted([f for f in filelist if _re.match(pattern, f)], reverse=True)
-    return matched[0] if matched else None
-
-_github_filelist      = _get_github_filelist()
-GITHUB_CURR_FILENAME  = _pick_file(_github_filelist, r"^\d{8}\.csv$") or ""
-GITHUB_PREV_FILENAME  = _pick_file(
-    [f for f in _github_filelist if f != GITHUB_CURR_FILENAME],
-    r"^\d{8}\.csv$"
-) or ""
-GITHUB_HANRO_FILENAME = _pick_file(_github_filelist, r"^\d{8}Diao-Jiao\.csv$") or ""
+# ファイル名はアプリ起動後に動的取得（モジュールレベルの静的実行を廃止）
+GITHUB_CURR_FILENAME  = ""
+GITHUB_PREV_FILENAME  = ""
+GITHUB_HANRO_FILENAME = ""
 
 MASTER_CSV_CANDIDATES = [
     r"C:\\Users\\keita\\Desktop\\配置馬券AC\\2023-2026.csv",
@@ -1312,9 +1291,35 @@ def fetch_github_csv(filename):
 
 @st.cache_data(ttl=300)
 def load_github_data():
-    c = fetch_github_csv(GITHUB_CURR_FILENAME)
-    p = fetch_github_csv(GITHUB_PREV_FILENAME)
-    h = fetch_github_csv(GITHUB_HANRO_FILENAME)
+    """GitHub Contents API でファイルリストを取得してCSVをダウンロード"""
+    import re as _re2
+    # Contents API でファイル一覧を取得
+    api_url = (GITHUB_RAW_BASE
+               .replace("https://raw.githubusercontent.com/", "https://api.github.com/repos/")
+               .replace("/main/data", "/contents/data"))
+    filelist = []
+    try:
+        resp = requests.get(api_url, timeout=10)
+        if resp.status_code == 200:
+            filelist = [f["name"] for f in resp.json() if isinstance(f, dict)]
+        else:
+            logger.warning(f"Contents API status={resp.status_code}: {api_url}")
+    except Exception as e:
+        logger.warning(f"Contents API error: {e}")
+
+    def pick(lst, pat):
+        matched = sorted([f for f in lst if _re2.match(pat, f)], reverse=True)
+        return matched[0] if matched else None
+
+    curr_name  = pick(filelist, r"^\d{8}\.csv$")
+    prev_name  = pick([f for f in filelist if f != curr_name], r"^\d{8}\.csv$")
+    hanro_name = pick(filelist, r"^\d{8}Diao-Jiao\.csv$")
+
+    c = fetch_github_csv(curr_name)  if curr_name  else None
+    p = fetch_github_csv(prev_name)  if prev_name  else None
+    h = fetch_github_csv(hanro_name) if hanro_name else None
+
+    logger.info(f"GitHub files: curr={curr_name}, prev={prev_name}, hanro={hanro_name}")
     return c, p, h
 
 @st.cache_data
@@ -1580,7 +1585,8 @@ with st.expander("📡 データ取得 / アップロード", expanded=False):
         if github_curr_bytes:
             st.success("✅ 出馬表：取得済み")
         else:
-            st.error("❌ 出馬表取得失敗 — GITHUB_RAW_BASE を確認してください")
+            st.error("❌ 出馬表取得失敗")
+        st.info(f"取得先: {GITHUB_RAW_BASE}\n\nリポジトリがPublicになっているか、dataフォルダにCSVが入っているか確認してください。")
     else:
         curr_upload  = st.file_uploader("当日出馬表CSV", type=["csv"], accept_multiple_files=True)
         prev_upload  = st.file_uploader("前日結果CSV",   type=["csv"], accept_multiple_files=True)
