@@ -1320,7 +1320,7 @@ def load_github_data():
     h = fetch_github_csv(hanro_name) if hanro_name else None
 
     logger.info(f"GitHub files: curr={curr_name}, prev={prev_name}, hanro={hanro_name}")
-    return c, p, h
+    return c, p, h, (curr_name or ""), (prev_name or ""), (hanro_name or "")
 
 @st.cache_data
 def get_master_history_data():
@@ -1581,13 +1581,15 @@ with st.expander("📡 データ取得 / アップロード", expanded=False):
     curr_files = prev_files = uploaded_hanro = None
 
     if data_mode == "📡 GitHub自動取得":
-        github_curr_bytes, github_prev_bytes, github_hanro_bytes = load_github_data()
+        github_curr_bytes, github_prev_bytes, github_hanro_bytes, _curr_name, _prev_name, _hanro_name = load_github_data()
+
         if github_curr_bytes:
-            st.success("✅ 出馬表：取得済み")
+            st.success(f"✅ 出馬表：取得済み")
         else:
             st.error("❌ 出馬表取得失敗")
-        st.info(f"取得先: {GITHUB_RAW_BASE}\n\nリポジトリがPublicになっているか、dataフォルダにCSVが入っているか確認してください。")
+            st.info(f"取得先: {GITHUB_RAW_BASE}\n\nリポジトリがPublicになっているか、dataフォルダにCSVが入っているか確認してください。")
     else:
+        _curr_name = _prev_name = _hanro_name = ""
         curr_upload  = st.file_uploader("当日出馬表CSV", type=["csv"], accept_multiple_files=True)
         prev_upload  = st.file_uploader("前日結果CSV",   type=["csv"], accept_multiple_files=True)
         hanro_upload = st.file_uploader("坂路CSV（任意）", type=["csv"])
@@ -1598,15 +1600,15 @@ with st.expander("📡 データ取得 / アップロード", expanded=False):
         if hanro_upload:
             uploaded_hanro = hanro_upload
 
-    # GitHub bytes → file-like に変換
+    # GitHub bytes → file-like に変換（ファイル名も正しくセット）
     if github_curr_bytes:
-        _f = io.BytesIO(github_curr_bytes); _f.name = GITHUB_CURR_FILENAME
+        _f = io.BytesIO(github_curr_bytes); _f.name = _curr_name or "curr.csv"
         curr_files = [_f]
     if github_prev_bytes:
-        _f = io.BytesIO(github_prev_bytes); _f.name = GITHUB_PREV_FILENAME
+        _f = io.BytesIO(github_prev_bytes); _f.name = _prev_name or "prev.csv"
         prev_files = [_f]
     if github_hanro_bytes:
-        _f = io.BytesIO(github_hanro_bytes); _f.name = GITHUB_HANRO_FILENAME
+        _f = io.BytesIO(github_hanro_bytes); _f.name = _hanro_name or "hanro.csv"
         uploaded_hanro = _f
 
 # --- history DB ---
@@ -1663,6 +1665,42 @@ if curr_files and st.session_state.get("last_processed_key") != combo_key:
                     df, _ = judge_blue_coating(df, "調教師")
                     df = judge_yellow_and_pairs(df, "馬主(最新/仮想)")
                     df, _ = judge_blue_coating(df, "馬主(最新/仮想)")
+
+            # ---- 坂路CSVのマージ ----
+            if uploaded_hanro is not None:
+                try:
+                    if hasattr(uploaded_hanro, "seek"):
+                        uploaded_hanro.seek(0)
+                    hanro_dfs = []
+                    for enc in ["utf-8", "shift_jis", "cp932"]:
+                        try:
+                            if hasattr(uploaded_hanro, "seek"):
+                                uploaded_hanro.seek(0)
+                            hanro_dfs.append(pd.read_csv(uploaded_hanro, encoding=enc))
+                            break
+                        except Exception:
+                            pass
+                    if hanro_dfs:
+                        hanro_df = hanro_dfs[0]
+                        hanro_df["馬名"] = hanro_df["馬名"].apply(clean_horse_name)
+                        # 坂路列を確認してマージ
+                        hanro_cols = [c for c in hanro_df.columns if c in [
+                            "4Fタイム", "Lap4", "Lap3", "Lap2", "ラスト1F", "ラップ評価"
+                        ]]
+                        if hanro_cols:
+                            merge_keys = [k for k in ["馬名", "場所", "Ｒ", "馬番"] if k in hanro_df.columns and k in df.columns]
+                            if merge_keys:
+                                # 既存列を削除してから再マージ
+                                drop_cols = [c for c in hanro_cols if c in df.columns]
+                                if drop_cols:
+                                    df = df.drop(columns=drop_cols)
+                                df = df.merge(
+                                    hanro_df[merge_keys + hanro_cols].drop_duplicates(subset=merge_keys),
+                                    on=merge_keys, how="left"
+                                )
+                                logger.info(f"坂路マージ完了: {len(hanro_df)}行, keys={merge_keys}")
+                except Exception as e:
+                    logger.warning(f"坂路CSVマージ失敗: {e}")
 
             if history_df is not None:
                 df = apply_performance_levels(df, history_df, global_target_datetime)
