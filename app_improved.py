@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # GitHub自動取得設定
 # ※ GITHUB_RAW_BASE をあなたのリポジトリに合わせて変更してください
 # ============================================================
-GITHUB_RAW_BASE = "https://raw.githubusercontent.com/【ユーザー名】/【リポジトリ名】/main/data"
+GITHUB_RAW_BASE = "https://raw.githubusercontent.com/jiroramone/haichi-app/main/data"
 
 # ファイル名は日付から自動生成（例: 20260620.csv / 20260620Diao-Jiao.csv）
 from datetime import date as _date, timedelta as _timedelta

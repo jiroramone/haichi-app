@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # GitHub自動取得設定（app.py と同じ値に変更してください）
 # ============================================================
-GITHUB_RAW_BASE = "https://raw.githubusercontent.com/【ユーザー名】/【リポジトリ名】/main/data"
+GITHUB_RAW_BASE = "https://raw.githubusercontent.com/jiroramone/haichi-app/main/data"
 
 from datetime import date as _date, timedelta as _timedelta
 _today     = _date.today()
