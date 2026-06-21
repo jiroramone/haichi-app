@@ -1667,38 +1667,92 @@ if curr_files and st.session_state.get("last_processed_key") != combo_key:
                     df, _ = judge_blue_coating(df, "馬主(最新/仮想)")
 
             # ---- 坂路CSVのマージ ----
+            # 列構造: 場所,年月日,曜日,仮番,馬名,性別,年齢,調教師,Time1,Time2,Time3,Time4,Lap4,Lap3,Lap2,Lap1
+            # マージキー: 馬名のみ（複数日 → 最新日付の1件を使用）
             if uploaded_hanro is not None:
                 try:
                     if hasattr(uploaded_hanro, "seek"):
                         uploaded_hanro.seek(0)
-                    hanro_dfs = []
+                    hanro_raw = None
                     for enc in ["utf-8", "shift_jis", "cp932"]:
                         try:
                             if hasattr(uploaded_hanro, "seek"):
                                 uploaded_hanro.seek(0)
-                            hanro_dfs.append(pd.read_csv(uploaded_hanro, encoding=enc))
+                            hanro_raw = pd.read_csv(uploaded_hanro, encoding=enc, header=None)
                             break
                         except Exception:
                             pass
-                    if hanro_dfs:
-                        hanro_df = hanro_dfs[0]
-                        hanro_df["馬名"] = hanro_df["馬名"].apply(clean_horse_name)
-                        # 坂路列を確認してマージ
-                        hanro_cols = [c for c in hanro_df.columns if c in [
-                            "4Fタイム", "Lap4", "Lap3", "Lap2", "ラスト1F", "ラップ評価"
-                        ]]
-                        if hanro_cols:
-                            merge_keys = [k for k in ["馬名", "場所", "Ｒ", "馬番"] if k in hanro_df.columns and k in df.columns]
-                            if merge_keys:
-                                # 既存列を削除してから再マージ
-                                drop_cols = [c for c in hanro_cols if c in df.columns]
-                                if drop_cols:
-                                    df = df.drop(columns=drop_cols)
-                                df = df.merge(
-                                    hanro_df[merge_keys + hanro_cols].drop_duplicates(subset=merge_keys),
-                                    on=merge_keys, how="left"
-                                )
-                                logger.info(f"坂路マージ完了: {len(hanro_df)}行, keys={merge_keys}")
+
+                    if hanro_raw is not None:
+                        # 列名を付ける（ヘッダーなし）
+                        base_cols = ["場所_h", "年月日", "曜日", "仮番", "馬名", "性別", "年齢", "調教師_h",
+                                     "Time1", "Time2", "Time3", "Time4", "Lap4", "Lap3", "Lap2", "Lap1"]
+                        hanro_raw.columns = base_cols[:len(hanro_raw.columns)]
+                        hanro_raw["馬名"] = hanro_raw["馬名"].apply(clean_horse_name)
+
+                        # ソートはラップ評価計算後に実施（下記）
+
+                        # マージする列を選択
+                        hanro_merge_cols = ["馬名"] + [c for c in ["Time1","Time4","Lap4","Lap3","Lap2","Lap1"]
+                                                        if c in hanro_latest.columns]
+                        hanro_latest = hanro_latest[hanro_merge_cols].copy()
+
+                        # アプリ内の列名に合わせてリネーム
+                        hanro_latest = hanro_latest.rename(columns={
+                            "Time1": "4Fタイム",
+                            "Time4": "ラスト1F",
+                            "Lap4":  "Lap4",
+                            "Lap3":  "Lap3",
+                            "Lap2":  "Lap2",
+                            "Lap1":  "Lap1",
+                        })
+
+                        # ラップ評価をPC版と同じロジックで計算
+                        def classify_lap_m(row):
+                            try:
+                                l2 = float(row.get("Lap2", float("nan")))
+                                l1 = float(row.get("Lap1", float("nan")))
+                            except Exception:
+                                return "-"
+                            if pd.isna(l2) or pd.isna(l1):
+                                return "-"
+                            if l2 > l1:
+                                accel_diff = round(l2 - l1, 1)
+                                if 12.0 <= l1 <= 12.9:
+                                    if l2 >= 13.0: return "1 終いのみ12秒台の加速"
+                                    elif 12.0 <= l2 <= 12.9: return "3 終い2F12秒台まとめの加速"
+                                elif l1 <= 11.9:
+                                    if accel_diff >= 0.5: return "🌟激アツ: 5 終い11秒台の急加速(0.5秒以上)"
+                                    else: return "5 終い11秒台の加速"
+                                return "-"
+                            else:
+                                decel_diff = round(l1 - l2, 1)
+                                if 12.0 <= l2 <= 12.9:
+                                    if l1 >= 13.0: return "🚨危険(地雷): 2 2Fのみ12秒台の減速"
+                                    elif 12.0 <= l1 <= 12.9: return "4 終い2F12秒台まとめの減速"
+                                elif l2 <= 11.9:
+                                    if l1 >= 12.0:
+                                        if decel_diff <= 0.4: return "🌟激アツ: 6 2Fのみ11秒台の微減速(0.4秒以内)"
+                                        else: return "6 2Fのみ11秒台の減速"
+                                    else: return "終い2F11秒台まとめの減速"
+                                return "-"
+
+                        # Time1昇順（最速タイム）で重複削除（PC版と同じ）
+                        hanro_raw["Time1"] = pd.to_numeric(hanro_raw["Time1"], errors="coerce")
+                        hanro_latest = (hanro_raw.sort_values("Time1", ascending=True)
+                                                 .drop_duplicates(subset=["馬名"], keep="first"))
+
+                        hanro_latest["ラップ評価"] = hanro_latest.apply(classify_lap_m, axis=1)
+
+                        # 既存の坂路列を削除してからマージ
+                        drop_cols = [c for c in ["4Fタイム","ラスト1F","Lap4","Lap3","Lap2","Lap1","ラップ評価"]
+                                     if c in df.columns]
+                        if drop_cols:
+                            df = df.drop(columns=drop_cols)
+
+                        df = df.merge(hanro_latest, on="馬名", how="left")
+                        logger.info(f"坂路マージ完了: {len(hanro_latest)}頭")
+
                 except Exception as e:
                     logger.warning(f"坂路CSVマージ失敗: {e}")
 
