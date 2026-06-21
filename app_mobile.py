@@ -898,7 +898,7 @@ def find_all_pair_partners_detailed(row, full_df):
         targets.append(('騎手', row.get('騎手'), '騎手_ペア', 0))
     if pd.notnull(row.get('調教師')): 
         targets.append(('調教師', row.get('調教師'), '調教師_ペア', 1))
-    if '馬主(最新/仮想)' in row.index and pd.notnull(row.get('馬主(最新/仮想)')): 
+    if '馬主(最新/仮想)' in (row.keys() if isinstance(row, dict) else row.index) and pd.notnull(row.get('馬主(最新/仮想)')):
         targets.append(('馬主(最新/仮想)', row.get('馬主(最新/仮想)', 'ー'), '馬主(最新/仮想)_ペア', 2))
         
     for col_name, val, pair_col, cat_idx in targets:
