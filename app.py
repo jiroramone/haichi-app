@@ -195,7 +195,7 @@ def _read_csv_with_encoding(filepath_or_buffer):
             filepath_or_buffer.seek(0)
         return pd.read_csv(filepath_or_buffer, encoding='cp932')
 
-@st.cache_data
+@st.cache_resource
 def get_master_history_data():
     """【改修】候補リストから最初に存在するCSVを自動選択"""
     filepath = None
@@ -245,12 +245,23 @@ def get_manual_history_data(file_bytes_content):
 # -------------------------------------------------------------------------
 # 黄金比能力判定
 # -------------------------------------------------------------------------
+
+def _build_history_index(history_df):
+    """馬名・race_id で高速検索するためのインデックスを構築（起動時1回だけ実行）。"""
+    if history_df is None or history_df.empty:
+        return {}, {}
+    horse_idx  = {name: grp.reset_index(drop=True) for name, grp in history_df.groupby('馬名', sort=False)}
+    raceid_idx = {rid:  grp.reset_index(drop=True) for rid,  grp in history_df.groupby('race_id', sort=False)}
+    return horse_idx, raceid_idx
+
 def apply_performance_levels(curr_df, history_df, global_target_datetime):
     if curr_df.empty: 
         return curr_df
         
     time_diff_col = '着差' if history_df is not None and '着差' in history_df.columns else None
     leg_type_col = '脚質' if history_df is not None and '脚質' in history_df.columns else None
+    # 馬名・race_idインデックスを事前構築（全行ループ前に1回だけ）
+    horse_idx, raceid_idx = _build_history_index(history_df)
     results = []
     
     for idx, row in curr_df.iterrows():
@@ -266,8 +277,9 @@ def apply_performance_levels(curr_df, history_df, global_target_datetime):
         if pd.isna(target_datetime) or target_datetime is pd.NaT: 
             target_datetime = global_target_datetime
             
-        if history_df is not None:
-            horse_history = history_df[(history_df['馬名'] == target_horse) & (history_df['date'] < target_datetime)]
+        if horse_idx:
+            _hdf = horse_idx.get(target_horse, pd.DataFrame())
+            horse_history = _hdf[_hdf['date'] < target_datetime] if not _hdf.empty else pd.DataFrame()
         else:
             horse_history = pd.DataFrame()
         
@@ -299,20 +311,25 @@ def apply_performance_levels(curr_df, history_df, global_target_datetime):
                 interval_str = f"中{naka_shu}週"
                 interval_weeks = naka_shu + 1
             
-            if history_df is not None:
-                rivals = history_df[(history_df['race_id'] == prev_race_id) & (history_df['馬名'] != target_horse)]
-            else:
-                rivals = pd.DataFrame()
+            _rdf = raceid_idx.get(prev_race_id, pd.DataFrame())
+            rivals = _rdf[_rdf['馬名'] != target_horse] if not _rdf.empty else pd.DataFrame()
                 
             rival_names = rivals['馬名'].unique() if not rivals.empty else []
             field_size = len(rival_names) + 1
             
             # 【高速化】ライバルの次走をまとめてクエリ（forループ → isin+groupbyでベクトル化）
-            rival_future_all = history_df[
-                history_df['馬名'].isin(rival_names) &
-                (history_df['date'] > prev_race_date) &
-                (history_df['date'] < target_datetime)
-            ] if len(rival_names) > 0 else pd.DataFrame()
+            # インデックス経由でライバルの次走をO(n)→O(rivals)に高速化
+            if len(rival_names) > 0:
+                _parts = []
+                for _rn in rival_names:
+                    _rdf2 = horse_idx.get(_rn, pd.DataFrame())
+                    if not _rdf2.empty:
+                        _p = _rdf2[(_rdf2['date'] > prev_race_date) & (_rdf2['date'] < target_datetime)]
+                        if not _p.empty:
+                            _parts.append(_p)
+                rival_future_all = pd.concat(_parts, ignore_index=True) if _parts else pd.DataFrame()
+            else:
+                rival_future_all = pd.DataFrame()
 
             rival_next = (rival_future_all
                           .sort_values('date')
@@ -979,7 +996,7 @@ def find_all_pair_partners_detailed(row, full_df):
         targets.append(('騎手', row.get('騎手'), '騎手_ペア', 0))
     if pd.notnull(row.get('調教師')): 
         targets.append(('調教師', row.get('調教師'), '調教師_ペア', 1))
-    if '馬主(最新/仮想)' in (row.keys() if isinstance(row, dict) else row.index) and pd.notnull(row.get('馬主(最新/仮想)')):
+    if '馬主(最新/仮想)' in row.index and pd.notnull(row.get('馬主(最新/仮想)')): 
         targets.append(('馬主(最新/仮想)', row.get('馬主(最新/仮想)', 'ー'), '馬主(最新/仮想)_ペア', 2))
         
     for col_name, val, pair_col, cat_idx in targets:
