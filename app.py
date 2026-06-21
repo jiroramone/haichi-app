@@ -1433,15 +1433,17 @@ if data_source == "📡 GitHub自動取得（推奨）":
      _curr_name, _prev_name, _hanro_name, _hist_name) = load_github_data()
 
     if github_curr_bytes:
-        st.sidebar.success("✅ 出馬表：取得済み")
+        st.sidebar.success(f"✅ 出馬表：{_curr_name}")
     else:
-        st.sidebar.warning("⚠️ 出馬表：today/ フォルダにCSVが見つかりません")
+        st.sidebar.warning("⚠️ 出馬表：today/ にCSVが見つかりません")
     if github_prev_bytes:
-        st.sidebar.success("✅ 前日結果：取得済み")
+        st.sidebar.success(f"✅ 前日結果：{_prev_name}")
     else:
-        st.sidebar.warning("⚠️ 前日結果：なし")
+        st.sidebar.info("ℹ️ 前日結果：prev/ なし（任意）")
     if github_hanro_bytes:
-        st.sidebar.success("✅ 坂路：取得済み")
+        st.sidebar.success(f"✅ 坂路：{_hanro_name}")
+    else:
+        st.sidebar.info("ℹ️ 坂路：train/ なし（任意）")
 
 st.sidebar.markdown("---")
 
@@ -1452,17 +1454,16 @@ uploaded_hanro = col3.file_uploader("坂路調教ラップCSVを選択", type=["
 # GitHub取得データを手動アップロードと同じ形式に変換
 if data_source == "📡 GitHub自動取得（推奨）":
     if github_curr_bytes:
-        import io as _io
-        _mock_curr = _io.BytesIO(github_curr_bytes)
-        _mock_curr.name = GITHUB_CURR_FILENAME
+        _mock_curr = io.BytesIO(github_curr_bytes)
+        _mock_curr.name = _curr_name or "today.csv"
         curr_files = [_mock_curr]
     if github_prev_bytes:
-        _mock_prev = _io.BytesIO(github_prev_bytes)
-        _mock_prev.name = GITHUB_PREV_FILENAME
+        _mock_prev = io.BytesIO(github_prev_bytes)
+        _mock_prev.name = _prev_name or "prev.csv"
         prev_files = [_mock_prev]
     if github_hanro_bytes:
-        _mock_hanro = _io.BytesIO(github_hanro_bytes)
-        _mock_hanro.name = GITHUB_HANRO_FILENAME
+        _mock_hanro = io.BytesIO(github_hanro_bytes)
+        _mock_hanro.name = _hanro_name or "train.csv"
         uploaded_hanro = _mock_hanro
 
 curr_state_key = ",".join([f.name for f in curr_files]) if curr_files else ""
