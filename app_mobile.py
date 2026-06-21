@@ -1574,6 +1574,7 @@ with st.expander("📡 データ取得 / アップロード", expanded=False):
 
     github_curr_bytes = github_prev_bytes = github_hanro_bytes = github_hist_bytes = None
     curr_files = prev_files = uploaded_hanro = None
+    history_df = None
 
     if data_mode == "📡 GitHub自動取得":
         github_curr_bytes, github_prev_bytes, github_hanro_bytes, github_hist_bytes,             _curr_name, _prev_name, _hanro_name, _hist_name = load_github_data()
@@ -1625,7 +1626,13 @@ with st.expander("📡 データ取得 / アップロード", expanded=False):
             logger.warning(f"過去DB自動ロード失敗: {_e}")
 
 # --- history DB ---
-history_df = get_master_history_data()
+if history_df is None:
+    history_df = get_master_history_data()
+# それでもNoneならGitHub data/から取得
+if history_df is None:
+    _gh_hist_name, _gh_hist_bytes = _github_latest_file(GITHUB_FOLDER_DATA)
+    if _gh_hist_bytes:
+        history_df = get_manual_history_data(_gh_hist_bytes)
 global_target_datetime = pd.to_datetime(date.today())
 
 # --- CSV処理 ---
