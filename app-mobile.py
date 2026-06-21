@@ -62,7 +62,28 @@ def load_github_data():
     return (curr_bytes, prev_bytes, hanro_bytes,
             curr_name or "today.csv", prev_name or "prev.csv", hanro_name or "train.csv")
 
-st.set_page_config(layout="wide", page_title="配置・能力ハイブリッド馬券検討システム")
+st.set_page_config(layout="wide", page_title="馬券検討📱", initial_sidebar_state="collapsed")
+
+
+# モバイル専用CSS
+st.markdown("""<style>
+/* サイドバーを初期非表示・ハンバーガーで開く */
+section[data-testid="stSidebar"] { min-width: 280px !important; }
+/* メインコンテンツをフル幅 */
+.main .block-container { padding: 0.5rem 0.6rem 2rem !important; max-width: 100% !important; }
+/* ボタン・selectbox タップしやすく */
+div.stButton > button { min-height: 44px; font-size: 15px; }
+div.stSelectbox > div > div { min-height: 44px; font-size: 15px; }
+/* ラジオボタン横並び文字サイズ */
+div.stRadio label { font-size: 14px; }
+/* テーブルスクロール */
+div[data-testid="stDataFrame"] { overflow-x: auto; }
+/* タイトル */
+h1 { font-size: 1.3rem !important; }
+h2 { font-size: 1.1rem !important; }
+h3 { font-size: 1rem !important; }
+</style>""", unsafe_allow_html=True)
+
 
 # -------------------------------------------------------------------------
 # 🎮 ゲーム風アニメーション & スタイリング用 CSS インジェクション
