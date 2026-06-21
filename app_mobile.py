@@ -194,7 +194,7 @@ def _read_csv_with_encoding(filepath_or_buffer):
             filepath_or_buffer.seek(0)
         return pd.read_csv(filepath_or_buffer, encoding='cp932')
 
-@st.cache_data
+@st.cache_resource
 def get_master_history_data():
     """【改修】候補リストから最初に存在するCSVを自動選択"""
     filepath = None
@@ -241,6 +241,14 @@ def get_manual_history_data(file_bytes_content):
     except Exception:
         return None
 
+def _build_history_index(history_df):
+    """馬名・race_id で高速検索するためのインデックスを構築。"""
+    if history_df is None or history_df.empty:
+        return {}, {}
+    horse_idx  = {name: grp for name, grp in history_df.groupby('馬名', sort=False)}
+    raceid_idx = {rid: grp  for rid,  grp in history_df.groupby('race_id', sort=False)}
+    return horse_idx, raceid_idx
+
 # -------------------------------------------------------------------------
 # 黄金比能力判定
 # -------------------------------------------------------------------------
@@ -250,6 +258,7 @@ def apply_performance_levels(curr_df, history_df, global_target_datetime):
         
     time_diff_col = '着差' if history_df is not None and '着差' in history_df.columns else None
     leg_type_col = '脚質' if history_df is not None and '脚質' in history_df.columns else None
+    horse_idx, raceid_idx = _build_history_index(history_df)
     results = []
     
     for idx, row in curr_df.iterrows():
@@ -265,8 +274,9 @@ def apply_performance_levels(curr_df, history_df, global_target_datetime):
         if pd.isna(target_datetime) or target_datetime is pd.NaT: 
             target_datetime = global_target_datetime
             
-        if history_df is not None:
-            horse_history = history_df[(history_df['馬名'] == target_horse) & (history_df['date'] < target_datetime)]
+        if horse_idx:
+            _hdf = horse_idx.get(target_horse, pd.DataFrame())
+            horse_history = _hdf[_hdf['date'] < target_datetime] if not _hdf.empty else pd.DataFrame()
         else:
             horse_history = pd.DataFrame()
         
@@ -298,10 +308,8 @@ def apply_performance_levels(curr_df, history_df, global_target_datetime):
                 interval_str = f"中{naka_shu}週"
                 interval_weeks = naka_shu + 1
             
-            if history_df is not None:
-                rivals = history_df[(history_df['race_id'] == prev_race_id) & (history_df['馬名'] != target_horse)]
-            else:
-                rivals = pd.DataFrame()
+            _rdf = raceid_idx.get(prev_race_id, pd.DataFrame())
+            rivals = _rdf[_rdf['馬名'] != target_horse] if not _rdf.empty else pd.DataFrame()
                 
             rival_names = rivals['馬名'].unique() if not rivals.empty else []
             field_size = len(rival_names) + 1
@@ -1213,7 +1221,7 @@ def render_horse_cards_carousel(h_list, selected_venue, curr_df, cards_per_row=3
         return
 
     if isinstance(h_list, pd.DataFrame):
-        h_list = [row for _, row in h_list.iterrows()]
+        h_list = h_list.to_dict('records')
 
     total = len(h_list)
     if total == 0:
@@ -1307,7 +1315,7 @@ def _github_latest_file(folder: str) -> tuple:
         logger.warning(f"GitHub取得エラー ({folder}): {e}")
         return None, None
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=3600)
 def load_github_data():
     """各フォルダの最新CSVを自動取得して bytes を返す。"""
     curr_name,  curr_bytes  = _github_latest_file(GITHUB_FOLDER_TODAY)
@@ -1317,7 +1325,7 @@ def load_github_data():
     return (curr_bytes, prev_bytes, hanro_bytes, hist_bytes,
             curr_name or "", prev_name or "", hanro_name or "", hist_name or "")
 
-@st.cache_data
+@st.cache_resource
 def get_master_history_data():
     for fp in MASTER_CSV_CANDIDATES:
         if os.path.exists(fp):
@@ -1823,7 +1831,7 @@ if marks:
             parts.append(f"<span style=\'color:{MARK_COLORS[mk]};font-weight:bold;\'>{mk}{nums}</span>")
     st.markdown(" ".join(parts), unsafe_allow_html=True)
 
-for _, row in race_df.iterrows():
+for row in race_df.to_dict('records'):
     render_mobile_card(row, selected_venue, curr_df)
 
 # --- 下部固定ナビ ---
