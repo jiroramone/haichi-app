@@ -1572,7 +1572,7 @@ with st.expander("📡 データ取得 / アップロード", expanded=False):
         st.cache_data.clear()
         st.rerun()
 
-    github_curr_bytes = github_prev_bytes = github_hanro_bytes = None
+    github_curr_bytes = github_prev_bytes = github_hanro_bytes = github_hist_bytes = None
     curr_files = prev_files = uploaded_hanro = None
 
     if data_mode == "📡 GitHub自動取得":
