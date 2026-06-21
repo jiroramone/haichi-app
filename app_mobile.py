@@ -14,16 +14,20 @@ logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# GitHub自動取得設定（app.py と同じ値に変更してください）
+# GitHub自動取得設定
+# フォルダ構成:
+#   today/  ... 当日出馬表CSV
+#   prev/   ... 前日結果CSV
+#   train/  ... 坂路調教CSV
+#   data/   ... 過去履歴DB CSV
 # ============================================================
-GITHUB_RAW_BASE = "https://raw.githubusercontent.com/jiroramone/haichi-app/main/data"
+GITHUB_REPO   = "jiroramone/haichi-app"
+GITHUB_BRANCH = "main"
 
-import re as _re
-
-# ファイル名はアプリ起動後に動的取得（モジュールレベルの静的実行を廃止）
-GITHUB_CURR_FILENAME  = ""
-GITHUB_PREV_FILENAME  = ""
-GITHUB_HANRO_FILENAME = ""
+GITHUB_FOLDER_TODAY  = "today"
+GITHUB_FOLDER_PREV   = "prev"
+GITHUB_FOLDER_TRAIN  = "train"
+GITHUB_FOLDER_DATA   = "data"
 
 MASTER_CSV_CANDIDATES = [
     r"C:\\Users\\keita\\Desktop\\配置馬券AC\\2023-2026.csv",
@@ -1278,49 +1282,40 @@ def render_horse_cards_carousel(h_list, selected_venue, curr_df, cards_per_row=3
 
 
 # ============================================================
-# GitHub取得
+# GitHub取得（フォルダ別・最新ファイル自動取得）
 # ============================================================
-def fetch_github_csv(filename):
-    url = f"{GITHUB_RAW_BASE}/{filename}"
+def _github_latest_file(folder: str) -> tuple:
+    """指定フォルダ内の最新CSVを取得して (ファイル名, bytes) を返す。"""
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{folder}?ref={GITHUB_BRANCH}"
     try:
-        r = requests.get(url, timeout=10)
-        return r.content if r.status_code == 200 else None
+        r = requests.get(api_url, timeout=10, headers={"Accept": "application/vnd.github+json"})
+        if r.status_code != 200:
+            logger.warning(f"GitHub API失敗 ({r.status_code}): {folder}")
+            return None, None
+        files = [f for f in r.json() if isinstance(f, dict)
+                 and f.get("type") == "file" and f.get("name","").lower().endswith(".csv")]
+        if not files:
+            return None, None
+        files.sort(key=lambda x: x["name"], reverse=True)
+        latest = files[0]
+        res = requests.get(latest["download_url"], timeout=15)
+        if res.status_code == 200:
+            logger.info(f"GitHub取得成功: {folder}/{latest['name']}")
+            return latest["name"], res.content
+        return None, None
     except Exception as e:
-        logger.warning(f"GitHub取得エラー: {e}")
-        return None
+        logger.warning(f"GitHub取得エラー ({folder}): {e}")
+        return None, None
 
 @st.cache_data(ttl=300)
 def load_github_data():
-    """GitHub Contents API でファイルリストを取得してCSVをダウンロード"""
-    import re as _re2
-    # Contents API でファイル一覧を取得
-    api_url = (GITHUB_RAW_BASE
-               .replace("https://raw.githubusercontent.com/", "https://api.github.com/repos/")
-               .replace("/main/data", "/contents/data"))
-    filelist = []
-    try:
-        resp = requests.get(api_url, timeout=10)
-        if resp.status_code == 200:
-            filelist = [f["name"] for f in resp.json() if isinstance(f, dict)]
-        else:
-            logger.warning(f"Contents API status={resp.status_code}: {api_url}")
-    except Exception as e:
-        logger.warning(f"Contents API error: {e}")
-
-    def pick(lst, pat):
-        matched = sorted([f for f in lst if _re2.match(pat, f)], reverse=True)
-        return matched[0] if matched else None
-
-    curr_name  = pick(filelist, r"^\d{8}\.csv$")
-    prev_name  = pick([f for f in filelist if f != curr_name], r"^\d{8}\.csv$")
-    hanro_name = pick(filelist, r"^\d{8}Diao-Jiao\.csv$")
-
-    c = fetch_github_csv(curr_name)  if curr_name  else None
-    p = fetch_github_csv(prev_name)  if prev_name  else None
-    h = fetch_github_csv(hanro_name) if hanro_name else None
-
-    logger.info(f"GitHub files: curr={curr_name}, prev={prev_name}, hanro={hanro_name}")
-    return c, p, h, (curr_name or ""), (prev_name or ""), (hanro_name or "")
+    """各フォルダの最新CSVを自動取得して bytes を返す。"""
+    curr_name,  curr_bytes  = _github_latest_file(GITHUB_FOLDER_TODAY)
+    prev_name,  prev_bytes  = _github_latest_file(GITHUB_FOLDER_PREV)
+    hanro_name, hanro_bytes = _github_latest_file(GITHUB_FOLDER_TRAIN)
+    hist_name,  hist_bytes  = _github_latest_file(GITHUB_FOLDER_DATA)
+    return (curr_bytes, prev_bytes, hanro_bytes, hist_bytes,
+            curr_name or "", prev_name or "", hanro_name or "", hist_name or "")
 
 @st.cache_data
 def get_master_history_data():
@@ -1581,13 +1576,24 @@ with st.expander("📡 データ取得 / アップロード", expanded=False):
     curr_files = prev_files = uploaded_hanro = None
 
     if data_mode == "📡 GitHub自動取得":
-        github_curr_bytes, github_prev_bytes, github_hanro_bytes, _curr_name, _prev_name, _hanro_name = load_github_data()
+        github_curr_bytes, github_prev_bytes, github_hanro_bytes, github_hist_bytes,             _curr_name, _prev_name, _hanro_name, _hist_name = load_github_data()
 
         if github_curr_bytes:
-            st.success(f"✅ 出馬表：取得済み")
+            st.success(f"✅ 出馬表：{_curr_name}")
         else:
-            st.error("❌ 出馬表取得失敗")
-            st.info(f"取得先: {GITHUB_RAW_BASE}\n\nリポジトリがPublicになっているか、dataフォルダにCSVが入っているか確認してください。")
+            st.warning(f"⚠️ 出馬表：today/ にCSVが見つかりません")
+        if github_prev_bytes:
+            st.success(f"✅ 前日結果：{_prev_name}")
+        else:
+            st.info("ℹ️ 前日結果：prev/ なし（任意）")
+        if github_hanro_bytes:
+            st.success(f"✅ 坂路：{_hanro_name}")
+        else:
+            st.info("ℹ️ 坂路：train/ なし（任意）")
+        if github_hist_bytes:
+            st.success(f"✅ 過去DB：{_hist_name}")
+        else:
+            st.info("ℹ️ 過去DB：data/ なし（任意）")
     else:
         _curr_name = _prev_name = _hanro_name = ""
         curr_upload  = st.file_uploader("当日出馬表CSV", type=["csv"], accept_multiple_files=True)
@@ -1602,14 +1608,21 @@ with st.expander("📡 データ取得 / アップロード", expanded=False):
 
     # GitHub bytes → file-like に変換（ファイル名も正しくセット）
     if github_curr_bytes:
-        _f = io.BytesIO(github_curr_bytes); _f.name = _curr_name or "curr.csv"
+        _f = io.BytesIO(github_curr_bytes); _f.name = _curr_name or "today.csv"
         curr_files = [_f]
     if github_prev_bytes:
         _f = io.BytesIO(github_prev_bytes); _f.name = _prev_name or "prev.csv"
         prev_files = [_f]
     if github_hanro_bytes:
-        _f = io.BytesIO(github_hanro_bytes); _f.name = _hanro_name or "hanro.csv"
+        _f = io.BytesIO(github_hanro_bytes); _f.name = _hanro_name or "train.csv"
         uploaded_hanro = _f
+    if github_hist_bytes and history_df is None:
+        try:
+            _hist_df = get_manual_history_data(github_hist_bytes)
+            if _hist_df is not None:
+                history_df = _hist_df
+        except Exception as _e:
+            logger.warning(f"過去DB自動ロード失敗: {_e}")
 
 # --- history DB ---
 history_df = get_master_history_data()
