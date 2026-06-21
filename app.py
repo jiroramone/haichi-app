@@ -20,44 +20,50 @@ logger = logging.getLogger(__name__)
 
 # ============================================================
 # GitHub自動取得設定
-# ※ 以下のURLをあなたのリポジトリに合わせて変更してください
+# フォルダ構成:
+#   today/  ... 当日出馬表CSV
+#   prev/   ... 前日結果CSV
+#   train/  ... 坂路調教CSV
+#   data/   ... 過去履歴DB CSV
 # ============================================================
-GITHUB_RAW_BASE = "https://raw.githubusercontent.com/【ユーザー名】/【リポジトリ名】/main/data"
+GITHUB_REPO   = "jiroramone/haichi-app"
+GITHUB_BRANCH = "main"
+GITHUB_FOLDER_TODAY = "today"
+GITHUB_FOLDER_PREV  = "prev"
+GITHUB_FOLDER_TRAIN = "train"
+GITHUB_FOLDER_DATA  = "data"
 
-# GitHubから取得するファイルの候補名（日付を含むファイルに対応）
-GITHUB_CURR_FILENAME  = "curr_today.csv"      # 当日出馬表
-GITHUB_PREV_FILENAME  = "prev_yesterday.csv"  # 前日結果
-GITHUB_HANRO_FILENAME = "hanro_today.csv"     # 坂路調教（任意）
-
-def fetch_github_csv(filename: str) -> bytes | None:
-    """GitHubのdataフォルダからCSVをダウンロードして bytes で返す。
-    失敗した場合は None を返す。"""
-    url = f"{GITHUB_RAW_BASE}/{filename}"
+def _github_latest_file(folder: str):
+    """指定フォルダ内の最新CSVを取得して (ファイル名, bytes) を返す。"""
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{folder}?ref={GITHUB_BRANCH}"
     try:
-        import requests as _req
-        r = _req.get(url, timeout=10)
-        if r.status_code == 200:
-            logger.info(f"GitHub取得成功: {url}")
-            return r.content
-        else:
-            logger.warning(f"GitHub取得失敗 (status={r.status_code}): {url}")
-            return None
+        r = requests.get(api_url, timeout=10, headers={"Accept": "application/vnd.github+json"})
+        if r.status_code != 200:
+            logger.warning(f"GitHub API失敗 ({r.status_code}): {folder}")
+            return None, None
+        files = [f for f in r.json() if isinstance(f, dict)
+                 and f.get("type") == "file" and f.get("name","").lower().endswith(".csv")]
+        if not files:
+            return None, None
+        files.sort(key=lambda x: x["name"], reverse=True)
+        latest = files[0]
+        res = requests.get(latest["download_url"], timeout=15)
+        if res.status_code == 200:
+            return latest["name"], res.content
+        return None, None
     except Exception as e:
-        logger.warning(f"GitHub取得エラー: {e}")
-        return None
+        logger.warning(f"GitHub取得エラー ({folder}): {e}")
+        return None, None
 
-@st.cache_data(ttl=300)  # 5分キャッシュ（同じデータを何度も取得しない）
+@st.cache_data(ttl=3600)
 def load_github_data():
-    """GitHub から当日データを自動取得してDataFrameを返す。
-    取得できない場合は (None, None, None) を返す。"""
-    curr_bytes  = fetch_github_csv(GITHUB_CURR_FILENAME)
-    prev_bytes  = fetch_github_csv(GITHUB_PREV_FILENAME)
-    hanro_bytes = fetch_github_csv(GITHUB_HANRO_FILENAME)
-
-    curr_df  = _read_csv_with_encoding(io.BytesIO(curr_bytes))  if curr_bytes  else None
-    prev_df  = _read_csv_with_encoding(io.BytesIO(prev_bytes))  if prev_bytes  else None
-    hanro_df = _read_csv_with_encoding(io.BytesIO(hanro_bytes)) if hanro_bytes else None
-    return curr_bytes, prev_bytes, hanro_bytes
+    """各フォルダの最新CSVを自動取得してbytesを返す。"""
+    curr_name,  curr_bytes  = _github_latest_file(GITHUB_FOLDER_TODAY)
+    prev_name,  prev_bytes  = _github_latest_file(GITHUB_FOLDER_PREV)
+    hanro_name, hanro_bytes = _github_latest_file(GITHUB_FOLDER_TRAIN)
+    hist_name,  hist_bytes  = _github_latest_file(GITHUB_FOLDER_DATA)
+    return (curr_bytes, prev_bytes, hanro_bytes, hist_bytes,
+            curr_name or "", prev_name or "", hanro_name or "", hist_name or "")
 
 st.set_page_config(layout="wide", page_title="配置・能力ハイブリッド馬券検討システム")
 
@@ -195,7 +201,7 @@ def _read_csv_with_encoding(filepath_or_buffer):
             filepath_or_buffer.seek(0)
         return pd.read_csv(filepath_or_buffer, encoding='cp932')
 
-@st.cache_resource
+@st.cache_data
 def get_master_history_data():
     """【改修】候補リストから最初に存在するCSVを自動選択"""
     filepath = None
@@ -245,23 +251,12 @@ def get_manual_history_data(file_bytes_content):
 # -------------------------------------------------------------------------
 # 黄金比能力判定
 # -------------------------------------------------------------------------
-
-def _build_history_index(history_df):
-    """馬名・race_id で高速検索するためのインデックスを構築（起動時1回だけ実行）。"""
-    if history_df is None or history_df.empty:
-        return {}, {}
-    horse_idx  = {name: grp.reset_index(drop=True) for name, grp in history_df.groupby('馬名', sort=False)}
-    raceid_idx = {rid:  grp.reset_index(drop=True) for rid,  grp in history_df.groupby('race_id', sort=False)}
-    return horse_idx, raceid_idx
-
 def apply_performance_levels(curr_df, history_df, global_target_datetime):
     if curr_df.empty: 
         return curr_df
         
     time_diff_col = '着差' if history_df is not None and '着差' in history_df.columns else None
     leg_type_col = '脚質' if history_df is not None and '脚質' in history_df.columns else None
-    # 馬名・race_idインデックスを事前構築（全行ループ前に1回だけ）
-    horse_idx, raceid_idx = _build_history_index(history_df)
     results = []
     
     for idx, row in curr_df.iterrows():
@@ -277,9 +272,8 @@ def apply_performance_levels(curr_df, history_df, global_target_datetime):
         if pd.isna(target_datetime) or target_datetime is pd.NaT: 
             target_datetime = global_target_datetime
             
-        if horse_idx:
-            _hdf = horse_idx.get(target_horse, pd.DataFrame())
-            horse_history = _hdf[_hdf['date'] < target_datetime] if not _hdf.empty else pd.DataFrame()
+        if history_df is not None:
+            horse_history = history_df[(history_df['馬名'] == target_horse) & (history_df['date'] < target_datetime)]
         else:
             horse_history = pd.DataFrame()
         
@@ -311,25 +305,20 @@ def apply_performance_levels(curr_df, history_df, global_target_datetime):
                 interval_str = f"中{naka_shu}週"
                 interval_weeks = naka_shu + 1
             
-            _rdf = raceid_idx.get(prev_race_id, pd.DataFrame())
-            rivals = _rdf[_rdf['馬名'] != target_horse] if not _rdf.empty else pd.DataFrame()
+            if history_df is not None:
+                rivals = history_df[(history_df['race_id'] == prev_race_id) & (history_df['馬名'] != target_horse)]
+            else:
+                rivals = pd.DataFrame()
                 
             rival_names = rivals['馬名'].unique() if not rivals.empty else []
             field_size = len(rival_names) + 1
             
             # 【高速化】ライバルの次走をまとめてクエリ（forループ → isin+groupbyでベクトル化）
-            # インデックス経由でライバルの次走をO(n)→O(rivals)に高速化
-            if len(rival_names) > 0:
-                _parts = []
-                for _rn in rival_names:
-                    _rdf2 = horse_idx.get(_rn, pd.DataFrame())
-                    if not _rdf2.empty:
-                        _p = _rdf2[(_rdf2['date'] > prev_race_date) & (_rdf2['date'] < target_datetime)]
-                        if not _p.empty:
-                            _parts.append(_p)
-                rival_future_all = pd.concat(_parts, ignore_index=True) if _parts else pd.DataFrame()
-            else:
-                rival_future_all = pd.DataFrame()
+            rival_future_all = history_df[
+                history_df['馬名'].isin(rival_names) &
+                (history_df['date'] > prev_race_date) &
+                (history_df['date'] < target_datetime)
+            ] if len(rival_names) > 0 else pd.DataFrame()
 
             rival_next = (rival_future_all
                           .sort_values('date')
@@ -1440,12 +1429,13 @@ if data_source == "📡 GitHub自動取得（推奨）":
     with col_g2:
         st.caption("5分間キャッシュ")
 
-    github_curr_bytes, github_prev_bytes, github_hanro_bytes = load_github_data()
+    (github_curr_bytes, github_prev_bytes, github_hanro_bytes, github_hist_bytes,
+     _curr_name, _prev_name, _hanro_name, _hist_name) = load_github_data()
 
     if github_curr_bytes:
         st.sidebar.success("✅ 出馬表：取得済み")
     else:
-        st.sidebar.error("❌ 出馬表：取得失敗 — GITHUB_RAW_BASE の設定を確認してください")
+        st.sidebar.warning("⚠️ 出馬表：today/ フォルダにCSVが見つかりません")
     if github_prev_bytes:
         st.sidebar.success("✅ 前日結果：取得済み")
     else:
