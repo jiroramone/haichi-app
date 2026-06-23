@@ -18,125 +18,46 @@ import logging
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
-
-
-
-
-
-
 # ============================================================
-# ウッド調教 (ututo形式) パース・判定関数
+# GitHub自動取得設定
+# ※ 以下のURLをあなたのリポジトリに合わせて変更してください
 # ============================================================
-_WOOD_COLS = [
-    '場所','コース','回り','年月日','曜日','時刻','馬名','Ｃ','性別','年齢',
-    '収得賞金','調教師',
-    '10F','9F','8F','7F','6F','5F','4F','3F','2F','1F',
-    'Lap9','Lap8','Lap7','Lap6','Lap5','Lap4w','Lap3w','Lap2w','Lap1w',
-    '日付S','所属','種牡馬名','母名','現馬主名','馬番仮番'
-]
+GITHUB_RAW_BASE = "https://raw.githubusercontent.com/【ユーザー名】/【リポジトリ名】/main/data"
 
-def _classify_wood_lap(lap1w):
-    try:
-        v = float(lap1w)
-    except (TypeError, ValueError):
-        return "-"
-    if v < 12.0:   return "🌟W-ラスト11秒台"
-    elif v < 12.5: return "✅W-ラスト12.0〜12.4"
-    elif v < 13.0: return "W-ラスト12.5〜12.9"
-    else:          return "W-ラスト13秒以上"
+# GitHubから取得するファイルの候補名（日付を含むファイルに対応）
+GITHUB_CURR_FILENAME  = "curr_today.csv"      # 当日出馬表
+GITHUB_PREV_FILENAME  = "prev_yesterday.csv"  # 前日結果
+GITHUB_HANRO_FILENAME = "hanro_today.csv"     # 坂路調教（任意）
 
-def parse_wood_csv(file_obj):
+def fetch_github_csv(filename: str) -> bytes | None:
+    """GitHubのdataフォルダからCSVをダウンロードして bytes で返す。
+    失敗した場合は None を返す。"""
+    url = f"{GITHUB_RAW_BASE}/{filename}"
     try:
-        try:
-            file_obj.seek(0)
-            df_w = pd.read_csv(file_obj, encoding='utf-8')
-        except UnicodeDecodeError:
-            file_obj.seek(0)
-            df_w = pd.read_csv(file_obj, encoding='cp932')
-        df_w.columns = df_w.columns.str.strip()
-        if '馬名' not in df_w.columns:
-            file_obj.seek(0)
-            try:
-                df_w = pd.read_csv(file_obj, header=None, encoding='utf-8')
-            except UnicodeDecodeError:
-                file_obj.seek(0)
-                df_w = pd.read_csv(file_obj, header=None, encoding='cp932')
-            df_w.columns = _WOOD_COLS[:len(df_w.columns)]
-        if 'コース' in df_w.columns:
-            df_w = df_w[df_w['コース'].astype(str).str.strip() == 'C'].copy()
-        if df_w.empty:
+        import requests as _req
+        r = _req.get(url, timeout=10)
+        if r.status_code == 200:
+            logger.info(f"GitHub取得成功: {url}")
+            return r.content
+        else:
+            logger.warning(f"GitHub取得失敗 (status={r.status_code}): {url}")
             return None
-        df_w['馬名'] = df_w['馬名'].apply(clean_horse_name)
-        if 'Lap1w' not in df_w.columns:
-            df_w['Lap1w'] = pd.to_numeric(df_w['1F'], errors='coerce') if '1F' in df_w.columns else np.nan
-        df_w['Lap1w'] = pd.to_numeric(df_w['Lap1w'], errors='coerce')
-        df_w['5F']    = pd.to_numeric(df_w['5F'],    errors='coerce') if '5F' in df_w.columns else np.nan
-        df_w['4F']    = pd.to_numeric(df_w['4F'],    errors='coerce') if '4F' in df_w.columns else np.nan
-        df_w['W評価'] = df_w['Lap1w'].apply(_classify_wood_lap)
-        df_w = df_w.sort_values('5F', ascending=True, na_position='last')
-        best = df_w.drop_duplicates(subset=['馬名'], keep='first').copy()
-        best = best.rename(columns={'5F': 'W5F', '4F': 'W4F', 'Lap1w': 'Wラスト1F'})
-        keep = [c for c in ['馬名','W5F','W4F','Wラスト1F','W評価'] if c in best.columns]
-        return best[keep].reset_index(drop=True)
     except Exception as e:
-        logger.warning(f"ウッドCSVパースエラー: {e}")
+        logger.warning(f"GitHub取得エラー: {e}")
         return None
 
-def classify_wood_combo(lapeval, w_eval):
-    lapeval = str(lapeval)
-    w_eval  = str(w_eval)
-    hanro_11 = any(x in lapeval for x in ['🌟激アツ', '5 終い11秒台', '激アツ'])
-    wood_11  = '🌟W-ラスト11秒台' in w_eval
-    wood_12  = '✅W-ラスト12.0'   in w_eval
-    if hanro_11 and wood_11:   return "🔥最強: 坂路×W両方11秒台"
-    elif hanro_11 and wood_12: return "⚡激熱: 坂路激アツ×W12.0〜12.4"
-    elif wood_11:              return "🌟W-ラスト11秒台(単体)"
-    elif wood_12:              return "✅W-ラスト12.0〜12.4(単体)"
-    elif hanro_11:             return "坂路激アツ(ウッドなし)"
-    return ""
-
-# ============================================================
-# GitHub自動取得設定（フォルダ方式）
-# ============================================================
-GITHUB_REPO         = "jiroramone/haichi-app"
-GITHUB_BRANCH       = "main"
-GITHUB_FOLDER_TODAY = "today"
-GITHUB_FOLDER_PREV  = "prev"
-GITHUB_FOLDER_TRAIN = "train"
-GITHUB_FOLDER_WOOD  = "wood"
-
-def _github_latest_file(folder: str):
-    api_url = (f"https://api.github.com/repos/{GITHUB_REPO}"
-               f"/contents/{folder}?ref={GITHUB_BRANCH}")
-    try:
-        r = requests.get(api_url, timeout=10,
-                         headers={"Accept": "application/vnd.github+json"})
-        if r.status_code != 200:
-            return None, None
-        files = [f for f in r.json()
-                 if isinstance(f, dict) and f.get("type") == "file"
-                 and f.get("name", "").lower().endswith(".csv")]
-        if not files:
-            return None, None
-        files.sort(key=lambda x: x["name"], reverse=True)
-        latest = files[0]
-        res = requests.get(latest["download_url"], timeout=15)
-        return (latest["name"], res.content) if res.status_code == 200 else (None, None)
-    except Exception as e:
-        logger.warning(f"GitHub取得エラー ({folder}): {e}")
-        return None, None
-
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)  # 5分キャッシュ（同じデータを何度も取得しない）
 def load_github_data():
-    curr_name,  curr_bytes  = _github_latest_file(GITHUB_FOLDER_TODAY)
-    prev_name,  prev_bytes  = _github_latest_file(GITHUB_FOLDER_PREV)
-    hanro_name, hanro_bytes = _github_latest_file(GITHUB_FOLDER_TRAIN)
-    wood_name,  wood_bytes  = _github_latest_file(GITHUB_FOLDER_WOOD)
-    return (curr_bytes, prev_bytes, hanro_bytes, wood_bytes,
-            curr_name  or "today.csv",
-            prev_name  or "prev.csv",
-            hanro_name or "train.csv",
-            wood_name  or "wood.csv")
+    """GitHub から当日データを自動取得してDataFrameを返す。
+    取得できない場合は (None, None, None) を返す。"""
+    curr_bytes  = fetch_github_csv(GITHUB_CURR_FILENAME)
+    prev_bytes  = fetch_github_csv(GITHUB_PREV_FILENAME)
+    hanro_bytes = fetch_github_csv(GITHUB_HANRO_FILENAME)
+
+    curr_df  = _read_csv_with_encoding(io.BytesIO(curr_bytes))  if curr_bytes  else None
+    prev_df  = _read_csv_with_encoding(io.BytesIO(prev_bytes))  if prev_bytes  else None
+    hanro_df = _read_csv_with_encoding(io.BytesIO(hanro_bytes)) if hanro_bytes else None
+    return curr_bytes, prev_bytes, hanro_bytes
 
 st.set_page_config(layout="wide", page_title="配置・能力ハイブリッド馬券検討システム")
 
@@ -1502,7 +1423,8 @@ if data_source == "📡 GitHub自動取得（推奨）":
     with col_g2:
         st.caption("5分間キャッシュ")
 
-    github_curr_bytes, github_prev_bytes, github_hanro_bytes = load_github_data()
+    (github_curr_bytes, github_prev_bytes, github_hanro_bytes, github_wood_bytes,
+     _curr_name, _prev_name, _hanro_name, _wood_name) = load_github_data()
 
     if github_curr_bytes:
         st.sidebar.success("✅ 出馬表：取得済み")
@@ -1646,29 +1568,6 @@ if curr_files and st.session_state.get('last_processed_key') != current_combo_ke
             for col in ['4Fタイム', 'Lap4', 'Lap3', 'Lap2', 'ラスト1F']: 
                 df[col] = np.nan
             df['ラップ評価'] = "-"
-
-        # ── ウッド調教データ処理 ──
-        wood_df_parsed = None
-        _wood_src = uploaded_wood if 'uploaded_wood' in dir() and uploaded_wood is not None else None
-        if _wood_src is not None:
-            try:
-                _wood_src.seek(0)
-            except Exception:
-                pass
-            wood_df_parsed = parse_wood_csv(_wood_src)
-        if wood_df_parsed is not None:
-            df = pd.merge(df, wood_df_parsed, on='馬名', how='left')
-            df['W評価'] = df['W評価'].fillna("-")
-        else:
-            for _wc in ['W5F', 'W4F', 'Wラスト1F']:
-                df[_wc] = np.nan
-            df['W評価'] = "-"
-        _lap_col   = df['ラップ評価'].fillna('-') if 'ラップ評価' in df.columns else ['-'] * len(df)
-        _weval_col = df['W評価'].fillna('-')      if 'W評価'     in df.columns else ['-'] * len(df)
-        df['調教コンボ'] = [
-            classify_wood_combo(str(_lv), str(_wv))
-            for _lv, _wv in zip(_lap_col, _weval_col)
-        ]
 
         if history_df is not None and not history_df.empty:
             df = apply_performance_levels(df, history_df, global_target_datetime)
