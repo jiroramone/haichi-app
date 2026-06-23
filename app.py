@@ -18,26 +18,24 @@ import logging
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
-
 # ============================================================
 # GitHub自動取得設定
-# リポジトリ構成: today/ prev/ train/ の各フォルダに最新CSVを置く
+# リポジトリ構成: today/ prev/ train/ wood/
 # ============================================================
 GITHUB_REPO         = "jiroramone/haichi-app"
 GITHUB_BRANCH       = "main"
 GITHUB_FOLDER_TODAY = "today"
 GITHUB_FOLDER_PREV  = "prev"
 GITHUB_FOLDER_TRAIN = "train"
+GITHUB_FOLDER_WOOD  = "wood"
 
 def _github_latest_file(folder: str):
-    """指定フォルダの最新CSVを (ファイル名, bytes) で返す。失敗時は (None, None)。"""
     api_url = (f"https://api.github.com/repos/{GITHUB_REPO}"
                f"/contents/{folder}?ref={GITHUB_BRANCH}")
     try:
         r = requests.get(api_url, timeout=10,
                          headers={"Accept": "application/vnd.github+json"})
         if r.status_code != 200:
-            logger.warning(f"GitHub API失敗 ({r.status_code}): {folder}")
             return None, None
         files = [f for f in r.json()
                  if isinstance(f, dict) and f.get("type") == "file"
@@ -47,25 +45,22 @@ def _github_latest_file(folder: str):
         files.sort(key=lambda x: x["name"], reverse=True)
         latest = files[0]
         res = requests.get(latest["download_url"], timeout=15)
-        if res.status_code == 200:
-            return latest["name"], res.content
-        return None, None
+        return (latest["name"], res.content) if res.status_code == 200 else (None, None)
     except Exception as e:
         logger.warning(f"GitHub取得エラー ({folder}): {e}")
         return None, None
 
 @st.cache_data(ttl=3600)
 def load_github_data():
-    """各フォルダの最新CSVを自動取得。戻り値: (bytes×3, name×3)。"""
     curr_name,  curr_bytes  = _github_latest_file(GITHUB_FOLDER_TODAY)
     prev_name,  prev_bytes  = _github_latest_file(GITHUB_FOLDER_PREV)
     hanro_name, hanro_bytes = _github_latest_file(GITHUB_FOLDER_TRAIN)
-    return (curr_bytes,  prev_bytes,  hanro_bytes,
+    wood_name,  wood_bytes  = _github_latest_file(GITHUB_FOLDER_WOOD)
+    return (curr_bytes, prev_bytes, hanro_bytes, wood_bytes,
             curr_name  or "today.csv",
             prev_name  or "prev.csv",
-            hanro_name or "train.csv")
-
-
+            hanro_name or "train.csv",
+            wood_name  or "wood.csv")
 st.set_page_config(layout="wide", page_title="配置・能力ハイブリッド馬券検討システム")
 
 # -------------------------------------------------------------------------
@@ -1212,6 +1207,41 @@ def render_single_horse_card(row_data, selected_venue, curr_df):
         hanro_html = f"""<div style="margin-top: 6px; padding: 8px 12px; background-color: #F9F9F9; color: #9E9E9E; border: 1px dashed #E0E0E0; border-radius: 8px; font-size: 11.5px; {badge_opacity}">
             <div style="font-weight: bold; margin-bottom: 2px;">🏃 坂路: データなし</div>
         </div>"""
+
+    # ── ウッド調教表示 ──
+    def _fmt_w(v):
+        try:
+            return f"{float(v):.1f}" if not pd.isna(float(v)) else "-"
+        except (TypeError, ValueError):
+            return "-"
+    w5f_txt = _fmt_w(row_data.get('W5F', float('nan')))
+    wl1_txt = _fmt_w(row_data.get('Wラスト1F', float('nan')))
+    w_eval    = str(row_data.get('W評価', '-'))
+    combo_val = str(row_data.get('調教コンボ', ''))
+    if w5f_txt != "-":
+        if '🌟W-ラスト11秒台' in w_eval:
+            w_bg, w_col, w_bdr = "#FFF3E0", "#E65100", "#FFE0B2"
+        elif '✅W-ラスト12.0' in w_eval:
+            w_bg, w_col, w_bdr = "#E8F5E9", "#2E7D32", "#A5D6A7"
+        else:
+            w_bg, w_col, w_bdr = "#ECEFF1", "#37474F", "#CFD8DC"
+        wood_html = f"""<div style="margin-top:4px; padding:8px 12px; background-color:{w_bg}; color:{w_col}; border:1px solid {w_bdr}; border-radius:8px; font-size:11.5px; {badge_opacity}">
+            <div style="font-weight:bold; margin-bottom:2px;">🌲 ウッド: 5F={w5f_txt}秒 / ラスト={wl1_txt}秒</div>
+            <div style="font-size:11px; font-weight:bold;">評: {w_eval}</div>
+        </div>"""
+    else:
+        wood_html = ""
+    if combo_val and combo_val not in ('', '坂路激アツ(ウッドなし)', '-'):
+        if '🔥' in combo_val:
+            cb_bg, cb_col, cb_bdr = "#BF360C", "#FFFFFF", "#E64A19"
+        elif '⚡' in combo_val:
+            cb_bg, cb_col, cb_bdr = "#E65100", "#FFFFFF", "#FF6D00"
+        else:
+            cb_bg, cb_col, cb_bdr = "#1565C0", "#FFFFFF", "#0D47A1"
+        combo_html = f"""<div style="margin-top:4px; padding:6px 12px; background-color:{cb_bg}; color:{cb_col}; border:1px solid {cb_bdr}; border-radius:8px; font-size:12px; font-weight:bold; text-align:center; {badge_opacity}">{combo_val}</div>"""
+    else:
+        combo_html = ""
+
     
     badges_html_list = []
     checks = [
@@ -1260,6 +1290,8 @@ def render_single_horse_card(row_data, selected_venue, curr_df):
             {haichi_elements_html}
             {perf_section_html}
             {hanro_html}
+            {wood_html}
+            {combo_html}
             {dec_badges_section}
         </div>
         {future_partner_html}
@@ -1420,9 +1452,11 @@ data_source = st.sidebar.radio(
 github_curr_bytes  = None
 github_prev_bytes  = None
 github_hanro_bytes = None
+github_wood_bytes  = None
 _curr_name  = "today.csv"
 _prev_name  = "prev.csv"
 _hanro_name = "train.csv"
+_wood_name  = "wood.csv"
 
 if data_source == "📡 GitHub自動取得（推奨）":
     col_g1, col_g2 = st.sidebar.columns(2)
@@ -1432,10 +1466,8 @@ if data_source == "📡 GitHub自動取得（推奨）":
             st.rerun()
     with col_g2:
         st.caption("1時間キャッシュ")
-
-    (github_curr_bytes, github_prev_bytes, github_hanro_bytes,
-     _curr_name, _prev_name, _hanro_name) = load_github_data()
-
+    (github_curr_bytes, github_prev_bytes, github_hanro_bytes, github_wood_bytes,
+     _curr_name, _prev_name, _hanro_name, _wood_name) = load_github_data()
     if github_curr_bytes:
         st.sidebar.success(f"✅ 出馬表：{_curr_name}")
     else:
@@ -1448,12 +1480,23 @@ if data_source == "📡 GitHub自動取得（推奨）":
         st.sidebar.success(f"✅ 坂路：{_hanro_name}")
     else:
         st.sidebar.info("ℹ️ 坂路：train/ なし（任意）")
+    if github_wood_bytes:
+        st.sidebar.success(f"✅ ウッド：{_wood_name}")
+    else:
+        st.sidebar.info("ℹ️ ウッド：wood/ なし（任意）")
 
 st.sidebar.markdown("---")
 
-prev_files = col1.file_uploader("前日の結果CSVを選択", type=["csv"], key="prev", accept_multiple_files=True)
-curr_files = col2.file_uploader("当日の出馬表CSVを選択", type=["csv"], key="curr", accept_multiple_files=True)
+prev_files     = col1.file_uploader("前日の結果CSVを選択", type=["csv"], key="prev", accept_multiple_files=True)
+curr_files     = col2.file_uploader("当日の出馬表CSVを選択", type=["csv"], key="curr", accept_multiple_files=True)
 uploaded_hanro = col3.file_uploader("坂路調教ラップCSVを選択", type=["csv"], key="hanro_upload", help="馬名, 年月日, Time1, Lap4... の列を含むこと")
+
+st.sidebar.subheader("4. ウッド調教CSV (任意)")
+uploaded_wood = st.sidebar.file_uploader(
+    "ウッド調教CSVを選択 (ututo形式)",
+    type=["csv"], key="wood_upload",
+    help="場所,コース,馬名,5F,4F,Lap1... の列を含むututo出力形式"
+)
 
 # GitHub取得データを手動アップロードと同じ形式に変換
 if data_source == "📡 GitHub自動取得（推奨）":
@@ -1469,13 +1512,16 @@ if data_source == "📡 GitHub自動取得（推奨）":
         _mock_hanro = io.BytesIO(github_hanro_bytes)
         _mock_hanro.name = _hanro_name
         uploaded_hanro = _mock_hanro
+    if github_wood_bytes:
+        _mock_wood = io.BytesIO(github_wood_bytes)
+        _mock_wood.name = _wood_name
+        uploaded_wood = _mock_wood
 
-
-curr_state_key = ",".join([f.name for f in curr_files]) if curr_files else ""
-prev_state_key = ",".join([f.name for f in prev_files]) if prev_files else ""
+curr_state_key  = ",".join([f.name for f in curr_files]) if curr_files else ""
+prev_state_key  = ",".join([f.name for f in prev_files]) if prev_files else ""
 hanro_state_key = uploaded_hanro.name if uploaded_hanro else ""
-current_combo_key = f"{curr_state_key}_{prev_state_key}_{hanro_state_key}_{global_target_date}"
-
+wood_state_key  = uploaded_wood.name  if uploaded_wood  else ""
+current_combo_key = f"{curr_state_key}_{prev_state_key}_{hanro_state_key}_{wood_state_key}_{global_target_date}" 
 if curr_files and st.session_state.get('last_processed_key') != current_combo_key:
     with st.spinner("🏇 データを解析・計算しています...（最初のみ数秒かかります）"):
         st.session_state['partner_cache'] = {}
@@ -1580,6 +1626,26 @@ if curr_files and st.session_state.get('last_processed_key') != current_combo_ke
             for col in ['4Fタイム', 'Lap4', 'Lap3', 'Lap2', 'ラスト1F']: 
                 df[col] = np.nan
             df['ラップ評価'] = "-"
+
+        # ── ウッド調教データ処理 ──
+        wood_df_parsed = None
+        _wood_src = uploaded_wood if uploaded_wood is not None else None
+        if _wood_src is not None:
+            try:
+                _wood_src.seek(0)
+            except Exception:
+                pass
+            wood_df_parsed = parse_wood_csv(_wood_src)
+        if wood_df_parsed is not None:
+            df = pd.merge(df, wood_df_parsed, on='馬名', how='left')
+            df['W評価'] = df['W評価'].fillna("-")
+        else:
+            for col in ['W5F', 'W4F', 'Wラスト1F']:
+                df[col] = np.nan
+            df['W評価'] = "-"
+        df['調教コンボ'] = df.apply(
+            lambda r: classify_wood_combo(r.get('ラップ評価', '-'), r.get('W評価', '-')), axis=1
+        )
 
         if history_df is not None and not history_df.empty:
             df = apply_performance_levels(df, history_df, global_target_datetime)
@@ -2279,7 +2345,7 @@ if not curr_df.empty:
                 
                 return styles
                 
-            perf_cols = ['Ｒ', '馬番', '馬名', '総合指数', '長期休養フラグ', 'ラップ評価', '4Fタイム', 'Lap4', 'Lap3', 'Lap2', 'ラスト1F', 'レベル点', '自力点', 'ボーナス減点', '前走着順', '前走着差', '前走脚質', 'レース間隔', '好走/次走あり', '前走日付']
+            perf_cols = ['Ｒ', '馬番', '馬名', '総合指数', '長期休養フラグ', 'ラップ評価', '4Fタイム', 'Lap4', 'Lap3', 'Lap2', 'ラスト1F', 'W5F', 'Wラスト1F', 'W評価', '調教コンボ', 'レベル点', '自力点', 'ボーナス減点', '前走着順', '前走着差', '前走脚質', 'レース間隔', '好走/次走あり', '前走日付']
             perf_cols_exist = [c for c in perf_cols if c in perf_display_df.columns]
             
             col_config_integrated = {
@@ -2289,7 +2355,11 @@ if not curr_df.empty:
                 "レベル点": st.column_config.NumberColumn("相手レベル点", format="%.1f 点"),
                 "自力点": st.column_config.NumberColumn("自力点", format="%.1f 点"), 
                 "ボーナス減点": st.column_config.NumberColumn("加減点", format="%.1f 点"),
-                "4Fタイム": st.column_config.NumberColumn("坂路4F", format="%.1f")
+                "4Fタイム":   st.column_config.NumberColumn("坂路4F",  format="%.1f"),
+                "W5F":        st.column_config.NumberColumn("W-5F",    format="%.1f"),
+                "Wラスト1F":  st.column_config.NumberColumn("Wラスト", format="%.1f"),
+                "W評価":      st.column_config.TextColumn("W評価"),
+                "調教コンボ": st.column_config.TextColumn("坂路×W")
             }
             
             st.dataframe(
