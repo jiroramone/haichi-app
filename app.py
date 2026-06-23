@@ -46,18 +46,45 @@ def fetch_github_csv(filename: str) -> bytes | None:
         logger.warning(f"GitHub取得エラー: {e}")
         return None
 
-@st.cache_data(ttl=300)  # 5分キャッシュ（同じデータを何度も取得しない）
-def load_github_data():
-    """GitHub から当日データを自動取得してDataFrameを返す。
-    取得できない場合は (None, None, None) を返す。"""
-    curr_bytes  = fetch_github_csv(GITHUB_CURR_FILENAME)
-    prev_bytes  = fetch_github_csv(GITHUB_PREV_FILENAME)
-    hanro_bytes = fetch_github_csv(GITHUB_HANRO_FILENAME)
+GITHUB_REPO         = "jiroramone/haichi-app"
+GITHUB_BRANCH       = "main"
+GITHUB_FOLDER_TODAY = "today"
+GITHUB_FOLDER_PREV  = "prev"
+GITHUB_FOLDER_TRAIN = "train"
+GITHUB_FOLDER_WOOD  = "wood"
 
-    curr_df  = _read_csv_with_encoding(io.BytesIO(curr_bytes))  if curr_bytes  else None
-    prev_df  = _read_csv_with_encoding(io.BytesIO(prev_bytes))  if prev_bytes  else None
-    hanro_df = _read_csv_with_encoding(io.BytesIO(hanro_bytes)) if hanro_bytes else None
-    return curr_bytes, prev_bytes, hanro_bytes
+def _github_latest_file(folder):
+    api_url = (f"https://api.github.com/repos/{GITHUB_REPO}"
+               f"/contents/{folder}?ref={GITHUB_BRANCH}")
+    try:
+        r = requests.get(api_url, timeout=10,
+                         headers={"Accept": "application/vnd.github+json"})
+        if r.status_code != 200:
+            return None, None
+        files = [f for f in r.json()
+                 if isinstance(f, dict) and f.get("type") == "file"
+                 and f.get("name", "").lower().endswith(".csv")]
+        if not files:
+            return None, None
+        files.sort(key=lambda x: x["name"], reverse=True)
+        latest = files[0]
+        res = requests.get(latest["download_url"], timeout=15)
+        return (latest["name"], res.content) if res.status_code == 200 else (None, None)
+    except Exception as e:
+        logger.warning(f"GitHub取得エラー ({folder}): {e}")
+        return None, None
+
+@st.cache_data(ttl=3600)
+def load_github_data():
+    curr_name,  curr_bytes  = _github_latest_file(GITHUB_FOLDER_TODAY)
+    prev_name,  prev_bytes  = _github_latest_file(GITHUB_FOLDER_PREV)
+    hanro_name, hanro_bytes = _github_latest_file(GITHUB_FOLDER_TRAIN)
+    wood_name,  wood_bytes  = _github_latest_file(GITHUB_FOLDER_WOOD)
+    return (curr_bytes, prev_bytes, hanro_bytes, wood_bytes,
+            curr_name  or "today.csv",
+            prev_name  or "prev.csv",
+            hanro_name or "train.csv",
+            wood_name  or "wood.csv")
 
 st.set_page_config(layout="wide", page_title="配置・能力ハイブリッド馬券検討システム")
 
@@ -1423,8 +1450,7 @@ if data_source == "📡 GitHub自動取得（推奨）":
     with col_g2:
         st.caption("5分間キャッシュ")
 
-    (github_curr_bytes, github_prev_bytes, github_hanro_bytes, github_wood_bytes,
-     _curr_name, _prev_name, _hanro_name, _wood_name) = load_github_data()
+    github_curr_bytes, github_prev_bytes, github_hanro_bytes = load_github_data()
 
     if github_curr_bytes:
         st.sidebar.success("✅ 出馬表：取得済み")
