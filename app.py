@@ -1450,7 +1450,7 @@ if data_source == "📡 GitHub自動取得（推奨）":
     with col_g2:
         st.caption("5分間キャッシュ")
 
-    github_curr_bytes, github_prev_bytes, github_hanro_bytes = load_github_data()
+    github_curr_bytes, github_prev_bytes, github_hanro_bytes, github_wood_bytes, curr_name, prev_name, hanro_name, wood_name = load_github_data()
 
     if github_curr_bytes:
         st.sidebar.success("✅ 出馬表：取得済み")
