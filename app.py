@@ -51,15 +51,31 @@ def _github_latest_file(folder: str):
         return None, None
 
 
-@st.cache_data(ttl=3600)  # 1時間キャッシュ
+@st.cache_data(ttl=3601, show_spinner=False)  # 1時間キャッシュ
 def load_github_data():
-    """GitHub の各フォルダから最新CSVを取得して返す（1時間キャッシュ）。"""
-    curr_name,  curr_bytes  = _github_latest_file(GITHUB_FOLDER_TODAY)
-    prev_name,  prev_bytes  = _github_latest_file(GITHUB_FOLDER_PREV)
-    hanro_name, hanro_bytes = _github_latest_file(GITHUB_FOLDER_TRAIN)
-    wood_name,  wood_bytes  = _github_latest_file(GITHUB_FOLDER_WOOD)
+    """GitHub の各フォルダから最新CSVを取得して返す（1時間キャッシュ）。
+    必ず 8要素タプルを返す。失敗時は None を含む。"""
+    try:
+        curr_name,  curr_bytes  = _github_latest_file(GITHUB_FOLDER_TODAY)
+    except Exception:
+        curr_name,  curr_bytes  = None, None
+    try:
+        prev_name,  prev_bytes  = _github_latest_file(GITHUB_FOLDER_PREV)
+    except Exception:
+        prev_name,  prev_bytes  = None, None
+    try:
+        hanro_name, hanro_bytes = _github_latest_file(GITHUB_FOLDER_TRAIN)
+    except Exception:
+        hanro_name, hanro_bytes = None, None
+    try:
+        wood_name,  wood_bytes  = _github_latest_file(GITHUB_FOLDER_WOOD)
+    except Exception:
+        wood_name,  wood_bytes  = None, None
     return (
-        curr_bytes, prev_bytes, hanro_bytes, wood_bytes,
+        curr_bytes,
+        prev_bytes,
+        hanro_bytes,
+        wood_bytes,
         curr_name  or "today.csv",
         prev_name  or "prev.csv",
         hanro_name or "train.csv",
@@ -1496,6 +1512,10 @@ github_curr_bytes  = None
 github_prev_bytes  = None
 github_hanro_bytes = None
 github_wood_bytes  = None
+curr_name          = "today.csv"
+prev_name          = "prev.csv"
+hanro_name         = "train.csv"
+wood_name          = "wood.csv"
 
 if data_source == "📡 GitHub自動取得（推奨）":
     col_g1, col_g2 = st.sidebar.columns(2)
@@ -1504,10 +1524,17 @@ if data_source == "📡 GitHub自動取得（推奨）":
             st.cache_data.clear()
             st.rerun()
     with col_g2:
-        st.caption("5分間キャッシュ")
+        st.caption("1時間キャッシュ")
 
-    github_curr_bytes, github_prev_bytes, github_hanro_bytes, github_wood_bytes,
-    curr_name, prev_name, hanro_name, wood_name = load_github_data()
+    _gh_result = load_github_data()
+    github_curr_bytes  = _gh_result[0]
+    github_prev_bytes  = _gh_result[1]
+    github_hanro_bytes = _gh_result[2]
+    github_wood_bytes  = _gh_result[3]
+    curr_name          = _gh_result[4]
+    prev_name          = _gh_result[5]
+    hanro_name         = _gh_result[6]
+    wood_name          = _gh_result[7]
 
     if github_curr_bytes:
         st.sidebar.success("✅ 出馬表：取得済み")
@@ -1542,10 +1569,10 @@ if data_source == "📡 GitHub自動取得（推奨）":
         _mock_hanro = _io.BytesIO(github_hanro_bytes)
         _mock_hanro.name = hanro_name
         uploaded_hanro = _mock_hanro
-        if github_wood_bytes:
-            _mock_wood = _io.BytesIO(github_wood_bytes)
-            _mock_wood.name = wood_name
-            uploaded_wood = _mock_wood
+    if github_wood_bytes:
+        _mock_wood = _io.BytesIO(github_wood_bytes)
+        _mock_wood.name = wood_name
+        uploaded_wood = _mock_wood
 
 curr_state_key = ",".join([f.name for f in curr_files]) if curr_files else ""
 prev_state_key = ",".join([f.name for f in prev_files]) if prev_files else ""
