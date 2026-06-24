@@ -275,6 +275,7 @@ def format_lap_time(val):
         return "-"
 
 # 【改修】CSVパス候補リスト（集中管理）
+# ローカル環境用 候補パス（Streamlit Cloud では無視される）
 MASTER_CSV_CANDIDATES = [
     r"C:\Users\keita\Desktop\配置馬券AC\2023-2026.csv",
     "2023-2026.csv",
@@ -283,6 +284,8 @@ MASTER_CSV_CANDIDATES = [
     r"C:\Users\keita\Desktop\配置馬券AC\2024-2026pci付き.csv",
     "2025-2026 タイム付き.csv",
 ]
+# GitHubの history フォルダに置く過去データCSV
+GITHUB_FOLDER_HISTORY = "history"
 
 def _read_csv_with_encoding(filepath_or_buffer):
     """【改修】UTF-8 → CP932 の順でCSV読み込みを試みる共通関数"""
@@ -293,9 +296,49 @@ def _read_csv_with_encoding(filepath_or_buffer):
             filepath_or_buffer.seek(0)
         return pd.read_csv(filepath_or_buffer, encoding='cp932')
 
-@st.cache_data
+def _parse_history_df(df):
+    """DataFrameを過去データ形式に変換する共通処理"""
+    df['date'] = df['日付'].apply(parse_date)
+    if 'レースID(新)' in df.columns:
+        df['race_id'] = df['レースID(新)'].astype(str).str.strip().str[:-2]
+    else:
+        df['race_id'] = df['日付'].astype(str) + df['場所'].astype(str) + df['Ｒ'].astype(str)
+    df['rank'] = df['着順'].apply(normalize_rank)
+    df['馬名'] = df['馬名'].apply(clean_horse_name)
+    df = df.dropna(subset=['date']).sort_values(by=['馬名', 'date']).reset_index(drop=True)
+    return df
+
+
+@st.cache_data(ttl=7200)  # 2時間キャッシュ
 def get_master_history_data():
-    """【改修】候補リストから最初に存在するCSVを自動選択"""
+    """過去データを取得する（GitHub history フォルダ → ローカル候補 の順で試みる）"""
+    # ① GitHub の history フォルダから取得（Streamlit Cloud 用）
+    try:
+        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FOLDER_HISTORY}?ref={GITHUB_BRANCH}"
+        r = requests.get(api_url, timeout=10, headers={"Accept": "application/vnd.github+json"})
+        if r.status_code == 200:
+            csv_files = [f for f in r.json()
+                         if isinstance(f, dict) and f.get("type") == "file"
+                         and f.get("name", "").lower().endswith(".csv")]
+            if csv_files:
+                # 複数ファイルがある場合はすべて結合（分割保存に対応）
+                dfs = []
+                for cf in csv_files:
+                    res = requests.get(cf["download_url"], timeout=30)
+                    if res.status_code == 200:
+                        try:
+                            dfs.append(_read_csv_with_encoding(io.BytesIO(res.content)))
+                        except Exception:
+                            pass
+                if dfs:
+                    df = pd.concat(dfs, ignore_index=True).drop_duplicates()
+                    df = _parse_history_df(df)
+                    logger.info(f"GitHub history: {len(df)}件 読み込み成功")
+                    return df
+    except Exception as e:
+        logger.warning(f"GitHub history 取得エラー: {e}")
+
+    # ② ローカルファイル候補（ローカル開発環境用）
     filepath = None
     for candidate in MASTER_CSV_CANDIDATES:
         if os.path.exists(candidate):
@@ -305,14 +348,7 @@ def get_master_history_data():
         return None
     try:
         df = _read_csv_with_encoding(filepath)
-        df['date'] = df['日付'].apply(parse_date)
-        if 'レースID(新)' in df.columns:
-            df['race_id'] = df['レースID(新)'].astype(str).str.strip().str[:-2]
-        else:
-            df['race_id'] = df['日付'].astype(str) + df['場所'].astype(str) + df['Ｒ'].astype(str)
-        df['rank'] = df['着順'].apply(normalize_rank)
-        df['馬名'] = df['馬名'].apply(clean_horse_name)
-        df = df.dropna(subset=['date']).sort_values(by=['馬名', 'date']).reset_index(drop=True)
+        df = _parse_history_df(df)
         return df
     except Exception as e:
         logger.warning(f'get_master_history_data: 読み込み失敗 ({filepath}): {e}')
@@ -1303,6 +1339,37 @@ def render_single_horse_card(row_data, selected_venue, curr_df):
         hanro_html = f"""<div style="margin-top: 6px; padding: 8px 12px; background-color: #F9F9F9; color: #9E9E9E; border: 1px dashed #E0E0E0; border-radius: 8px; font-size: 11.5px; {badge_opacity}">
             <div style="font-weight: bold; margin-bottom: 2px;">🏃 坂路: データなし</div>
         </div>"""
+
+    # ── ウッドブロック ──
+    w5f_val   = row_data.get('W5F', np.nan)
+    wlast_val = row_data.get('Wラスト1F', np.nan)
+    w_eval    = str(row_data.get('W評価', '-') or '-')
+    w_combo   = str(row_data.get('調教コンボ', '') or '')
+
+    w5f_txt   = f"{float(w5f_val):.1f}" if pd.notnull(w5f_val) else "-"
+    wlast_txt = f"{float(wlast_val):.1f}" if pd.notnull(wlast_val) else "-"
+
+    if '🔥' in w_combo:
+        wood_bg, wood_color, wood_border = "#FFF3E0", "#BF360C", "#FFCC80"
+    elif '⚡' in w_combo:
+        wood_bg, wood_color, wood_border = "#F3E5F5", "#6A1B9A", "#CE93D8"
+    elif '🌟' in w_eval:
+        wood_bg, wood_color, wood_border = "#E8F5E9", "#1B5E20", "#A5D6A7"
+    elif '✅' in w_eval:
+        wood_bg, wood_color, wood_border = "#E3F2FD", "#0D47A1", "#90CAF9"
+    else:
+        wood_bg, wood_color, wood_border = "#F9F9F9", "#9E9E9E", "#E0E0E0"
+
+    combo_html = f"""<div style="font-size:11px; font-weight:bold; margin-top:3px;">{w_combo}</div>""" if w_combo else ""
+
+    if w5f_txt != "-" or wlast_txt != "-":
+        wood_html = f"""<div style="margin-top: 6px; padding: 8px 12px; background-color: {wood_bg}; color: {wood_color}; border: 1px solid {wood_border}; border-radius: 8px; font-size: 11.5px; {badge_opacity}">
+            <div style="font-weight: bold; margin-bottom: 2px;">🌲 ウッド: 5F={w5f_txt}秒 / ラスト={wlast_txt}秒</div>
+            <div style="font-size: 11px;">{w_eval}</div>
+            {combo_html}
+        </div>"""
+    else:
+        wood_html = ""
     
     badges_html_list = []
     checks = [
@@ -1351,6 +1418,7 @@ def render_single_horse_card(row_data, selected_venue, curr_df):
             {haichi_elements_html}
             {perf_section_html}
             {hanro_html}
+            {wood_html}
             {dec_badges_section}
         </div>
         {future_partner_html}
@@ -1474,17 +1542,20 @@ st.sidebar.markdown("### 🧬 黄金比能力データベース")
 history_df = get_master_history_data()
 
 if history_df is not None and not history_df.empty:
-    st.sidebar.success(f"自動ロード完了\n({len(history_df)}件のレコード)")
     min_d = history_df['date'].min()
     max_d = history_df['date'].max()
-    st.sidebar.caption(f"DB収録期間: {min_d.strftime('%Y-%m-%d')} 〜 {max_d.strftime('%Y-%m-%d')}")
+    st.sidebar.success(f"✅ 過去データ読み込み済み ({len(history_df):,}件)")
+    st.sidebar.caption(f"期間: {min_d.strftime('%Y-%m-%d')} 〜 {max_d.strftime('%Y-%m-%d')}")
 else:
-    st.sidebar.warning("過去実績データベースが見つかりません。")
-    uploaded_history = st.sidebar.file_uploader("過去履歴DB-CSVを手動ロード", type=["csv"], key="history_manual")
+    st.sidebar.warning("⚠️ 過去データが見つかりません")
+    st.sidebar.info("GitHubの **history/** フォルダに過去データCSVをアップロードするか、以下から手動ロードしてください。")
+    uploaded_history = st.sidebar.file_uploader("📂 過去データCSVを手動ロード", type=["csv"], key="history_manual")
     if uploaded_history is not None:
         history_df = get_manual_history_data(uploaded_history.getvalue())
         if history_df is not None: 
-            st.sidebar.success(f"手動ロード完了: {len(history_df)}件")
+            st.sidebar.success(f"✅ 手動ロード完了: {len(history_df):,}件")
+        else:
+            st.sidebar.error("❌ 読み込み失敗。CSVの形式を確認してください。")
 
 st.sidebar.markdown("---")
 global_target_date = st.sidebar.date_input("判定基準日（能力算出用）", date.today())
@@ -1553,6 +1624,9 @@ prev_files = col1.file_uploader("前日の結果CSVを選択", type=["csv"], key
 curr_files = col2.file_uploader("当日の出馬表CSVを選択", type=["csv"], key="curr", accept_multiple_files=True)
 uploaded_wood  = None
 uploaded_hanro = col3.file_uploader("坂路調教ラップCSVを選択", type=["csv"], key="hanro_upload", help="馬名, 年月日, Time1, Lap4... の列を含むこと")
+uploaded_wood_manual = col3.file_uploader("🌲 ウッド調教CSVを選択", type=["csv"], key="wood_upload", help="ututo形式 ウッドコースCSV")
+if uploaded_wood_manual is not None:
+    uploaded_wood = uploaded_wood_manual
 
 # GitHub取得データを手動アップロードと同じ形式に変換
 if data_source == "📡 GitHub自動取得（推奨）":
@@ -2384,7 +2458,7 @@ if not curr_df.empty:
 
     elif selected_tab == "📊 黄金比能力比較":
         st.markdown(f"### 📊 黄金比バランス指数・調教比較 ({selected_venue})")
-        st.markdown("前走の相手関係、タイム差（着差）、脚質データ、ローテーション、長期休養フラグに加え、坂路調教の4Fタイムおよび終いラップ評価の一覧です。")
+        st.markdown("前走の相手関係、タイム差（着差）、脚質データ、ローテーション、長期休養フラグに加え、坂路調教・ウッド調教ラップ評価の一覧です。")
         
         perf_display_df = filtered_df_venue.copy()
         if '総合指数' in perf_display_df.columns:
@@ -2403,13 +2477,17 @@ if not curr_df.empty:
                 
                 return styles
                 
-            perf_cols = ['Ｒ', '馬番', '馬名', '総合指数', '長期休養フラグ', 'ラップ評価', '4Fタイム', 'Lap4', 'Lap3', 'Lap2', 'ラスト1F', 'レベル点', '自力点', 'ボーナス減点', '前走着順', '前走着差', '前走脚質', 'レース間隔', '好走/次走あり', '前走日付']
+            perf_cols = ['Ｒ', '馬番', '馬名', '総合指数', '調教コンボ', 'W5F', 'Wラスト1F', 'W評価', '長期休養フラグ', 'ラップ評価', '4Fタイム', 'Lap4', 'Lap3', 'Lap2', 'ラスト1F', 'レベル点', '自力点', 'ボーナス減点', '前走着順', '前走着差', '前走脚質', 'レース間隔', '好走/次走あり', '前走日付']
             perf_cols_exist = [c for c in perf_cols if c in perf_display_df.columns]
             
             col_config_integrated = {
                 "Ｒ": st.column_config.NumberColumn("レース", format="%d R"), 
                 "馬番": st.column_config.NumberColumn("馬番", format="%d"),
                 "総合指数": st.column_config.NumberColumn("★ 総合指数", format="%.1f"), 
+                "調教コンボ": st.column_config.TextColumn("🔥 調教コンボ"),
+                "W5F": st.column_config.NumberColumn("🌲 W5F", format="%.1f"),
+                "Wラスト1F": st.column_config.NumberColumn("🌲 Wラスト", format="%.1f"),
+                "W評価": st.column_config.TextColumn("🌲 W評価"),
                 "レベル点": st.column_config.NumberColumn("相手レベル点", format="%.1f 点"),
                 "自力点": st.column_config.NumberColumn("自力点", format="%.1f 点"), 
                 "ボーナス減点": st.column_config.NumberColumn("加減点", format="%.1f 点"),
